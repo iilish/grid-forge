@@ -3,8 +3,9 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list
 
-# Run the proofs for phases 0..N against an environment: just prove 3 staging
-# Add --allow-pending while a phase is under development.
+# Run the proofs for gates 0..N against an environment: just prove 3 staging
+# Gates are delivery milestones; the runner calls them phases in its output.
+# Add --allow-pending while a gate is under development.
 prove phase env="local" *flags:
     prove/prove.sh {{phase}} {{env}} {{flags}}
 
@@ -12,15 +13,15 @@ prove phase env="local" *flags:
 prove-list:
     prove/prove.sh --list
 
-# Verify docs, registry and check implementations agree
+# Verify registry and check implementations agree; also checks local planning docs when present
 prove-lint:
     prove/prove.sh --lint
 
-# Print the filled-in AI prompt for a phase: just phase-prompt 3
+# Maintainer-only: print the filled-in AI prompt for a gate (requires local docs)
 phase-prompt n:
     @cat docs/prompts/phase-{{n}}.md
 
-# Create the next numbered ADR from the template: just adr "Partition key"
+# Maintainer-only: create the next ADR from the template (requires local docs)
 adr title:
     #!/usr/bin/env bash
     set -euo pipefail

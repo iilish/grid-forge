@@ -42,18 +42,24 @@ list_checks() {
 }
 
 # lint: docs, registry and implementations must agree.
+# The planning documents are local-only. In a public checkout without them,
+# check the registry and implementations without reporting every ID as missing
+# from docs.
 lint() {
-  local rc=0 docs_ids reg_ids impl_ids out
-  docs_ids=$(grep -rhoE 'P[0-9]+-[ASR][0-9]+' "$DOCS_DIR" 2>/dev/null | sort -u)
+  local rc=0 docs_ids="" reg_ids impl_ids out
   reg_ids=$(registry_rows | cut -f1 | sort -u)
   impl_ids=$(grep -rhoE --include='*.sh' '^check_P[0-9]+_[ASR][0-9]+' "$CHECKS_DIR" 2>/dev/null \
              | sed -E 's/^check_//; s/_/-/' | sort -u)
 
-  out=$(comm -23 <(printf '%s\n' "$docs_ids") <(printf '%s\n' "$reg_ids") | sed '/^$/d')
-  [[ -n "$out" ]] && { echo "In docs but not in registry:"; echo "$out" | sed 's/^/  /'; rc=1; }
+  if [[ -d "$DOCS_DIR" ]]; then
+    docs_ids=$(grep -rhoE 'P[0-9]+-[ASR][0-9]+' "$DOCS_DIR" 2>/dev/null | sort -u)
 
-  out=$(comm -13 <(printf '%s\n' "$docs_ids") <(printf '%s\n' "$reg_ids") | sed '/^$/d')
-  [[ -n "$out" ]] && { echo "In registry but not in docs:"; echo "$out" | sed 's/^/  /'; rc=1; }
+    out=$(comm -23 <(printf '%s\n' "$docs_ids") <(printf '%s\n' "$reg_ids") | sed '/^$/d')
+    [[ -n "$out" ]] && { echo "In docs but not in registry:"; echo "$out" | sed 's/^/  /'; rc=1; }
+
+    out=$(comm -13 <(printf '%s\n' "$docs_ids") <(printf '%s\n' "$reg_ids") | sed '/^$/d')
+    [[ -n "$out" ]] && { echo "In registry but not in docs:"; echo "$out" | sed 's/^/  /'; rc=1; }
+  fi
 
   out=$(comm -13 <(printf '%s\n' "$reg_ids") <(printf '%s\n' "$impl_ids") | sed '/^$/d')
   [[ -n "$out" ]] && { echo "Implemented but not registered:"; echo "$out" | sed 's/^/  /'; rc=1; }
