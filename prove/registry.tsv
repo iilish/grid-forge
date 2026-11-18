@@ -9,6 +9,8 @@ P0-S1	0	silent	Events are lost on restart or when the in-process channel is full
 P0-S2	0	silent	The page shows a stale or wrong build SHA
 P0-S3	0	silent	The deploy is green but the app is broken
 P0-S4	0	silent	An unsigned or unscanned image reaches staging
+P0-S5	0	silent	The worker silently drops events after repeated database failures
+P0-S6	0	silent	/readyz reports ready while draining and no longer accepts new work
 P0-R1	0	rollback	Deploy a second build, then roll back to the first image digest; the rollback completes and the time is recorded
 P1-A1	1	acceptance	20 simulated devices for 30 seconds produce 20 rows, each updated within 5 seconds of being sent
 P1-A2	1	acceptance	An invalid envelope returns a 4xx, increments a counter and produces no Kafka message
