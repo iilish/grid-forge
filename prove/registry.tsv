@@ -1,0 +1,125 @@
+# id	phase	kind	description  (generated from docs/phases; keep in sync, then run: just prove-lint)
+P0-A1	0	acceptance	Clicking 'send test event' on staging makes the event appear on the dashboard within 5 seconds
+P0-A2	0	acceptance	The page shows a build SHA that matches the image digest running in the cluster
+P0-A3	0	acceptance	/readyz returns non-200 while the database is unreachable and recovers when it returns
+P0-A4	0	acceptance	Staging and prod run the identical image digest (no rebuild on promotion)
+P0-A5	0	acceptance	PR pipeline feedback is under 10 minutes (median of the last 10 runs)
+P0-A6	0	acceptance	Merge-to-staging lead time with no manual steps is recorded as the baseline metric
+P0-S1	0	silent	Events are lost on restart or when the in-process channel is full (accepted limitation until Phases 1 and 2)
+P0-S2	0	silent	The page shows a stale or wrong build SHA
+P0-S3	0	silent	The deploy is green but the app is broken
+P0-S4	0	silent	An unsigned or unscanned image reaches staging
+P0-R1	0	rollback	Deploy a second build, then roll back to the first image digest; the rollback completes and the time is recorded
+P1-A1	1	acceptance	20 simulated devices for 30 seconds produce 20 rows, each updated within 5 seconds of being sent
+P1-A2	1	acceptance	An invalid envelope returns a 4xx, increments a counter and produces no Kafka message
+P1-A3	1	acceptance	With the broker down, ingest returns 503 and never 200
+P1-A4	1	acceptance	The dashboard shows a last-seen age for every device
+P1-A5	1	acceptance	All messages from one device always go to the same partition
+P1-S1	1	silent	A stalled consumer leaves old values on the dashboard looking current
+P1-S2	1	silent	A wrong partition key reorders one device's messages
+P1-S3	1	silent	Ingest returns 200 before the broker has acknowledged
+P1-R1	1	rollback	Roll back to the previous image digest with Phase 1's migration applied; the Phase 0 proofs still pass and the rollback time is recorded
+P2-A1	2	acceptance	After a rolling deploy and after killing the processor, the ingest pod and Postgres in turn (simulator running), the gap detector reports zero missing sequence numbers for every device
+P2-A2	2	acceptance	A restore drill rebuilds the database from backup and the history query result matches the pre-backup checksum
+P2-A3	2	acceptance	A 24-hour single-device history query meets its p95 target at benchmark volume (target fixed in Stage A)
+P2-A4	2	acceptance	The retention job drops an expired partition without blocking inserts (insert p99 during the drop stays under the target fixed in Stage A)
+P2-A5	2	acceptance	The previous app version (N-1) passes the smoke test against the new schema (N)
+P2-S1	2	silent	The offset is committed before the database write, so a crash loses messages
+P2-S2	2	silent	The gap detector is blind to loss at the tail of a stream
+P2-S3	2	silent	Backups exist but never restore
+P2-S4	2	silent	The next partition does not exist, so inserts start failing at a boundary
+P2-R1	2	rollback	Roll back to the previous image digest with Phase 2's migration applied; proofs for phases 0 to 1 still pass and the rollback time is recorded
+P3-A1	3	acceptance	A fixture stream with known duplicates leaves stored history rows equal to the number of unique events
+P3-A2	3	acceptance	device_state equals the highest (boot_count, seq) for every device, regardless of arrival order
+P3-A3	3	acceptance	A delayed event appears in its correct position in history ordered by device time
+P3-A4	3	acceptance	100 seeded shuffles of the same recorded stream produce an identical final database state
+P3-A5	3	acceptance	A processor crash mid-batch followed by recovery produces the same final state as an uninterrupted run
+P3-A6	3	acceptance	A message with an unknown future schema_ver lands in the parked table and increments the parked counter
+P3-S1	3	silent	A device reboot resets seq and the new messages look like replays and are dropped
+P3-S2	3	silent	The unique constraint on the partitioned table omits the partition key, so duplicates slip through across partitions
+P3-S3	3	silent	Clock skew places events in the future and corrupts ordering or retention
+P3-S4	3	silent	Late data is not reflected in rollups
+P3-S5	3	silent	Stored data silently drifts from what was produced
+P3-R1	3	rollback	Roll back to the previous image digest with Phase 3's migration applied; proofs for phases 0 to 2 still pass and the rollback time is recorded
+P4-A1	4	acceptance	A test enumerates every route and asserts that a viewer is denied every mutation
+P4-A2	4	acceptance	A device goes offline after N missed heartbeats and recovers when one returns
+P4-A3	4	acceptance	Telemetry from an unknown or decommissioned device is rejected, counted and listed in the unknown-devices view
+P4-A4	4	acceptance	Every mutation writes an audit row naming the actor
+P4-A5	4	acceptance	An operator can log in through OIDC and filter devices by status and site
+P4-S1	4	silent	One route is missing its role check
+P4-S2	4	silent	Device status flaps near the heartbeat threshold
+P4-S3	4	silent	A query is missing its org filter
+P4-R1	4	rollback	Roll back to the previous image digest with Phase 4's migration applied; proofs for phases 0 to 3 still pass and the rollback time is recorded
+P5-A1	5	acceptance	A double-click on the command form produces exactly one command
+P5-A2	5	acceptance	A limit above the device's rated power returns 422 and writes no outbox row
+P5-A3	5	acceptance	Restarting the relay mid-flow loses no command and applies none twice
+P5-A4	5	acceptance	An unacked command ends as Expired after its TTL plus the grace period
+P5-A5	5	acceptance	Every state transition writes an audit row
+P5-A6	5	acceptance	An operator click reaches Applied end to end within the target time in the kind e2e (target fixed in Stage A)
+P5-S1	5	silent	A relay crash between publish and marking published causes a duplicate publish
+P5-S2	5	silent	Several relay instances break per-device ordering
+P5-S3	5	silent	A command is stuck in Dispatched forever
+P5-S4	5	silent	A stale command is applied after the device reconnects
+P5-S5	5	silent	A lost ack leaves the UI saying Dispatched indefinitely
+P5-R1	5	rollback	Roll back to the previous image digest with Phase 5's migration applied; proofs for phases 0 to 4 still pass and the rollback time is recorded
+P6-A1	6	acceptance	A device update appears in the browser within 2 seconds without a refresh
+P6-A2	6	acceptance	A deploy with 1k connected clients: all reconnect within the target time (fixed in Stage A) and match a fresh snapshot
+P6-A3	6	acceptance	A deliberately slow client does not grow server memory beyond a fixed bound
+P6-A4	6	acceptance	Reconnecting with Last-Event-ID resumes without a gap, or falls back to a snapshot
+P6-S1	6	silent	Proxy or ingress buffering makes SSE look fine but deliver updates in bursts
+P6-S2	6	silent	tokio::broadcast lag silently drops updates for a slow client
+P6-S3	6	silent	Two pods share a Kafka consumer group and steal each other's partitions
+P6-R1	6	rollback	Roll back to the previous image digest with Phase 6's migration applied; proofs for phases 0 to 5 still pass and the rollback time is recorded
+P7-A1	7	acceptance	Abort after wave 1: only wave-1 devices received the command and every other device's command is Cancelled
+P7-A2	7	acceptance	No command is dispatched after the abort timestamp
+P7-A3	7	acceptance	A deploy in the middle of a campaign neither duplicates nor skips a wave
+P7-A4	7	acceptance	The operator who requested a campaign cannot approve it
+P7-A5	7	acceptance	A failure rate above the threshold pauses the campaign automatically
+P7-S1	7	silent	Two scheduler replicas fire the same wave
+P7-S2	7	silent	Progress counters drift from reality
+P7-S3	7	silent	A decommissioned device is included in a wave
+P7-S4	7	silent	An abort races a dispatch and a command goes out after the abort
+P7-R1	7	rollback	Roll back to the previous image digest with Phase 7's migration applied; proofs for phases 0 to 6 still pass and the rollback time is recorded
+P8-A1	8	acceptance	A test asserts span continuity across API, outbox, relay and device ack within one trace
+P8-A2	8	acceptance	A deliberately slow processor build is blocked from promotion by the SLO gate and its alert fires with a runbook link
+P8-A3	8	acceptance	Every alert has fired at least once in staging through fault injection
+P8-A4	8	acceptance	Dashboards and alert rules deploy from code and the promtool unit tests pass
+P8-S1	8	silent	Trace context is lost at a hop and traces silently break into pieces
+P8-S2	8	silent	An alert is configured but can never fire
+P8-S3	8	silent	A high-cardinality label such as device_id on a metric overloads the metrics store
+P8-R1	8	rollback	Roll back to the previous image digest with Phase 8's migration applied; proofs for phases 0 to 7 still pass and the rollback time is recorded
+P9-A1	9	acceptance	Cross-tenant reads, writes and SSE subscriptions all fail for an operator of another org
+P9-A2	9	acceptance	A deliberately slow build is automatically aborted at 10% canary
+P9-A3	9	acceptance	At 10x load, overload returns fast 429 or 503 responses and goodput and p99 latency stay within bounds fixed in Stage A
+P9-A4	9	acceptance	Device ingest requires a per-device credential and a wrong credential is rejected
+P9-S1	9	silent	A pooled connection carries one tenant's app.org_id into the next request
+P9-S2	9	silent	The app connects as a superuser or table owner, so row-level security is bypassed
+P9-S3	9	silent	Tower layers are in the wrong order (auth after rate limit, timeout outside retry)
+P9-R1	9	rollback	Roll back to the previous image digest with Phase 9's migration applied; proofs for phases 0 to 8 still pass and the rollback time is recorded
+P10-A1	10	acceptance	Draining a node under load keeps the freshness SLO within target
+P10-A2	10	acceptance	The cluster rejects an image without a valid Cosign signature
+P10-A3	10	acceptance	Scaling processors under a backlog brings consumer lag back under the target within the time fixed in Stage A
+P10-A4	10	acceptance	The PR pipeline stays within its speed budget after the build optimizations
+P10-S1	10	silent	A PodDisruptionBudget still allows all replicas to go down
+P10-S2	10	silent	Readiness stays green while the consumer task is dead
+P10-S3	10	silent	SIGTERM is ignored so shutdown is not a drain and in-flight work is lost
+P10-R1	10	rollback	Roll back to the previous image digest with Phase 10's migration applied; proofs for phases 0 to 9 still pass and the rollback time is recorded
+P11-A1	11	acceptance	The same image digest that ran on k3s runs on AWS, with only values differing
+P11-A2	11	acceptance	A device fault event produces a delivered alert through SQS and a Lambda
+P11-A3	11	acceptance	A poison alert lands in the DLQ and redrives successfully after the fix
+P11-A4	11	acceptance	The full environment is rebuilt from scratch with one command and the time is recorded
+P11-A5	11	acceptance	The OpenTofu plan on a PR shows a cost estimate
+P11-S1	11	silent	The DLQ fills and nobody notices
+P11-S2	11	silent	IAM permissions are wider than needed
+P11-S3	11	silent	Infrastructure drifts from the code
+P11-S4	11	silent	A surprise bill
+P11-R1	11	rollback	Roll back to the previous image digest with Phase 11's migration applied; proofs for phases 0 to 10 still pass and the rollback time is recorded
+P12-A1	12	acceptance	A scripted game day runs broker restart, Postgres failover, poison message and a 5k-device reconnect storm and produces a report of what held and what broke
+P12-A2	12	acceptance	Every drill asserts that its fault actually took effect before asserting recovery
+P12-A3	12	acceptance	The scale ladder (100, 1k, 10k, 100k simulated devices) records the first bottleneck at each rung
+P12-A4	12	acceptance	A poison message lands in the DLQ topic and the replay tool reprocesses it after the fix
+P12-A5	12	acceptance	A written post-mortem for the game day is committed with action items
+P12-S1	12	silent	A drill passes because the fault never took effect
+P12-S2	12	silent	Recovery is judged by pod readiness instead of the SLO
+P12-S3	12	silent	A reconnect storm is hidden by retries that all succeed late
+P12-R1	12	rollback	Roll back to the previous image digest with Phase 12's migration applied; proofs for phases 0 to 11 still pass and the rollback time is recorded
