@@ -3,6 +3,44 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 default:
     @just --list
 
+# Build every workspace member
+build:
+    cargo build --workspace
+
+# Fast local gate: static checks plus unit and contract tests; no Docker
+check: lint test
+
+# Full pre-PR and CI gate: fast gate plus disposable Postgres tests
+check-full: check test-db
+
+# Static checks; does not run tests
+lint: fmt-check clippy-check contracts-check openapi-check prove-lint
+
+# Check formatting without changing files
+fmt-check:
+    cargo fmt --all --check
+
+# Clippy with warnings denied
+clippy-check:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# Protobuf lint and format check
+contracts-check:
+    buf lint
+    buf format --diff --exit-code
+
+# YAML/OpenAPI parse smoke check
+openapi-check:
+    yq eval '.' crates/contracts/openapi/openapi.yaml > /dev/null
+
+# All tests via nextest
+test:
+    cargo nextest run --workspace
+
+# Database integration tests against a disposable Postgres
+test-db:
+    scripts/with-postgres.sh cargo nextest run -p gridforge-store --features db-tests --test migrations
+
 # Run the proofs for gates 0..N against an environment: just prove 3 staging
 # Gates are delivery milestones; the runner calls them phases in its output.
 # Add --allow-pending while a gate is under development.

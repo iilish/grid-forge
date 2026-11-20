@@ -1,0 +1,11 @@
+[package]
+name = "gridforge-store"
+version.workspace = true
+edition.workspace = true
+
+[features]
+db-tests = []
+
+[dependencies]
+sqlx.workspace = true
+uuid.workspace = true

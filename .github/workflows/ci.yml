@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-full:
+    name: check-full
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install just and nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just@1.58.0,nextest@0.9.152
+          fallback: none
+
+      - name: Install buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: 1.75.0
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Go for yq
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install yq
+        run: |
+          go install github.com/mikefarah/yq/v4@v4.53.3
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Run full gate
+        run: just check-full

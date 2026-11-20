@@ -1,0 +1,318 @@
+openapi: 3.1.0
+
+info:
+  title: GridForge API
+  version: 0.1.0
+  description: |
+    Walking-skeleton HTTP contract. Authentication is out of scope; the
+    service is cluster-internal.
+
+servers:
+  - url: http://localhost:8080
+
+tags:
+  - name: console
+  - name: ingest
+  - name: operations
+
+paths:
+  /:
+    get:
+      operationId: getDashboard
+      tags: [console]
+      summary: Server-rendered event dashboard
+      description: |
+        Returns the HTML dashboard with `data-build-sha`, database status and
+        the 20 most recent events. The page refreshes itself every second.
+      responses:
+        "200":
+          description: Dashboard HTML
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            text/html:
+              schema:
+                type: string
+        "503":
+          $ref: "#/components/responses/Problem"
+
+  /events/test:
+    post:
+      operationId: createTestEvent
+      tags: [console]
+      summary: Send one synthetic event through the real ingest path
+      description: |
+        Builds a valid Envelope with `device_id = "test-button"`, a unique
+        payload token and the configured organization id, then uses the same
+        EventSink as device ingest. It does not write to the database directly.
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              additionalProperties: false
+      responses:
+        "303":
+          description: Browser form submission accepted; redirect to the dashboard
+          headers:
+            Location:
+              schema:
+                type: string
+                const: /
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+        "202":
+          description: JSON client accepted the event
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventCreated"
+        "503":
+          description: Event sink is full or closed
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                example: 1
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /ingest:
+    post:
+      operationId: ingestEnvelope
+      tags: [ingest]
+      summary: Accept one Envelope v1
+      description: |
+        Accepts exactly `application/x-protobuf` with an Envelope v1 message.
+        The request body is limited to 64 KiB. The envelope payload itself is
+        limited to 32 KiB. JSON is not accepted at this endpoint.
+      requestBody:
+        required: true
+        content:
+          application/x-protobuf:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "202":
+          description: Event accepted for persistence
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventCreated"
+        "400":
+          description: Malformed protobuf
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "413":
+          description: Request body exceeds 64 KiB
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "415":
+          description: Content type is not application/x-protobuf
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          description: Envelope failed domain validation
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              examples:
+                invalidSchemaVersion:
+                  value:
+                    type: urn:gridforge:problem:invalid-envelope
+                    title: Invalid envelope
+                    status: 422
+                    detail: schema_ver must be 1
+                    instance: /ingest
+                    request_id: 0192f3c4-0000-7000-8000-000000000000
+        "503":
+          description: Event sink is full or closed
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                example: 1
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+
+  /healthz:
+    get:
+      operationId: getLiveness
+      tags: [operations]
+      summary: Process liveness
+      description: Never checks the database.
+      responses:
+        "200":
+          description: Process is alive
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            text/plain:
+              schema:
+                type: string
+                const: ok
+
+  /readyz:
+    get:
+      operationId: getReadiness
+      tags: [operations]
+      summary: Dependency readiness
+      description: |
+        Probes the database with a 1 second timeout and reports drain state.
+        Returns 503 when the database is down or the process is draining.
+      responses:
+        "200":
+          description: Ready to accept work
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+              examples:
+                ready:
+                  value:
+                    status: ready
+                    db: up
+                    draining: false
+        "503":
+          description: Not ready
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Readiness"
+              examples:
+                databaseDown:
+                  value:
+                    status: not_ready
+                    db: down
+                    draining: false
+                draining:
+                  value:
+                    status: not_ready
+                    db: up
+                    draining: true
+
+  /metrics:
+    get:
+      operationId: getMetrics
+      tags: [operations]
+      summary: Prometheus metrics
+      responses:
+        "200":
+          description: Prometheus text exposition
+          headers:
+            x-request-id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            text/plain:
+              schema:
+                type: string
+
+components:
+  headers:
+    RequestId:
+      description: Request identifier echoed in the response and logs
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    Problem:
+      description: Request failed
+      headers:
+        x-request-id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+
+  schemas:
+    EventCreated:
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties:
+        id:
+          type: string
+          format: uuid
+
+    Problem:
+      type: object
+      additionalProperties: false
+      required: [type, title, status, detail, instance, request_id]
+      properties:
+        type:
+          type: string
+          format: uri
+          examples:
+            - urn:gridforge:problem:invalid-envelope
+        title:
+          type: string
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        detail:
+          type: string
+        instance:
+          type: string
+        request_id:
+          type: string
+          format: uuid
+
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [status, db, draining]
+      properties:
+        status:
+          type: string
+          enum: [ready, not_ready]
+        db:
+          type: string
+          enum: [up, down]
+        draining:
+          type: boolean

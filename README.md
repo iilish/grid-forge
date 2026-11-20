@@ -17,10 +17,10 @@ curl -fsS http://localhost:8080/healthz
 curl -fsS http://localhost:8080/readyz
 ```
 
-Open <http://localhost:8080> for the console. Then run the test suite:
+Open <http://localhost:8080> for the console. Then run the full local gate (this needs the verification tools below):
 
 ```bash
-just test
+just check-full
 ```
 
 Stop the stack with `just down`. See [Prerequisites](#prerequisites), [Ports and URLs](#ports-and-urls) and [Configuration](#configuration) for details.
@@ -41,9 +41,10 @@ Full verification and cluster workflows:
 | Tool | Tested with | Needed for |
 |---|---|---|
 | **cargo-nextest** | 0.9+ | `just test`. |
-| **cargo-deny**, **cargo-audit** | 0.21+, 0.23+ | `just lint`. |
-| **sqlx-cli** | 0.9+ | `sqlx prepare --check` in `just lint`. |
-| **buf** | 1.75+ | Protobuf lint and breaking-change checks. |
+| **cargo-deny**, **cargo-audit** | 0.21+, 0.23+ | Dependency checks added to `just lint` when configured. |
+| **sqlx-cli** | 0.9+ | Prepared-query checks added to `just lint` once queries exist. |
+| **buf** | 1.75+ | Protobuf lint and later breaking-change checks. |
+| **yq** | Mike Farah v4.53+ | OpenAPI YAML parse check. |
 | **Helm** | 4.3+ | Chart lint and local Kubernetes deployment. |
 | **kubectl** | 1.32+ | Inspecting local clusters and proof jobs. |
 | **k3d** | 5.9+ | Local Kubernetes without a separate VM. |
@@ -235,9 +236,23 @@ Stops and removes local containers. Keeps Postgres and broker volumes. Use `just
 
 Follows logs from the local stack. `just logs` follows everything; `just logs postgres` follows one service.
 
+#### `just build`
+
+Builds every workspace member with `cargo build --workspace`. Runs build scripts, including Protobuf code generation for `gridforge-contracts`. Success: exit code 0 and `target/debug/` contains the generated code and binaries. It does not run tests.
+
+#### `just check`
+
+Runs the fast local gate: `just lint` followed by `just test`. Use it while iterating. It needs no Docker or Postgres and does not modify files.
+
+#### `just check-full`
+
+Runs the full pre-PR and CI gate: `just check` followed by `just test-db`. Use it before opening or updating a pull request and before a release. It starts a disposable Postgres container, runs the database migration tests, and removes the container. It does not touch local stack data.
+
+Success: exit code 0 with every static check, unit/contract test and database test passing. GitHub Actions runs this same command on pull requests, `main` and release tags.
+
 #### `just test`
 
-Runs unit and integration tests with nextest. Integration tests use the local Postgres and create isolated test schemas, so `just up` must have run at least once. A cold run includes compilation; warm runs target a few minutes. Run a subset with:
+Runs unit and contract tests with nextest. Database-backed migration tests are separate in `just test-db`, so `just test` stays fast and does not need Postgres.
 
 ```bash
 cargo nextest run -p contracts
@@ -246,20 +261,27 @@ cargo nextest run envelope
 
 Success: exit code 0. Tests never modify your development data.
 
+#### `just test-db`
+
+Starts a disposable Postgres container, exports `DATABASE_URL`, runs the SQLx migration integration tests and removes the container. Requires Docker. It does not touch local stack data.
+
+```bash
+just test-db
+```
+
+Success: four migration tests pass: fresh schema, idempotent second run, `org_id uuid not null`, and down migration removing `events`.
+
 #### `just lint`
 
-Runs checks without modifying files:
+Runs static checks without modifying files:
 
-- `cargo fmt --check`
+- `cargo fmt --all --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo deny check`
-- `cargo audit`
-- `sqlx prepare --check`
-- `buf lint` and `buf breaking`
-- OpenAPI document validation
-- `helm lint` and `kubeconform`
+- `buf lint` and `buf format --diff --exit-code`
+- OpenAPI YAML parse with `yq`
+- `just prove-lint`
 
-Success: exit code 0. Fix formatting with `cargo fmt --all`; fix contract or manifest errors at the source. The full lint set needs the tools listed under [Prerequisites](#prerequisites).
+Dependency audits, SQLx prepared-query checks, proto breaking checks and Helm/Kubernetes validation are added when those artifacts exist. Success: exit code 0. Fix formatting with `cargo fmt --all`; fix contract or manifest errors at the source. The full lint set needs the tools listed under [Prerequisites](#prerequisites).
 
 #### `just simulator`
 
@@ -297,7 +319,7 @@ A Helm chart packages the services, Argo CD runs in-cluster and syncs from the p
 
 - **Rust workspace.** Shared contracts and domain rules, with separate crates for ingest, processor, relay, web and the simulator.
 - **Axum and Tower.** Server-rendered HTML with Askama, HTMX for partial refresh and server-sent events for live operations.
-- **Postgres.** SeaORM for entities, migrations and ordinary CRUD; SQLx for hot paths where explicit SQL is clearer or measurably faster.
+- **Postgres.** SeaORM for entities and ordinary CRUD; SQLx for migrations and hot paths where explicit SQL is clearer or measurably faster.
 - **Kafka-compatible transport.** Redpanda locally; the contract is versioned Protobuf topics.
 - **Kubernetes.** One Helm chart, Argo CD, digest-based promotion and signed images.
 - **Proof harness.** Shell checks with stable IDs, recorded results and a registry that must match the implementations.
@@ -312,6 +334,8 @@ infra/                         OpenTofu, from the AWS milestone
 ops/runbooks/                  one runbook per alert and drill
 bench/results/                 committed raw benchmark output
 prove/                         registry, checks, environments, results
+scripts/                       disposable test infrastructure
+.github/workflows/             CI gates
 justfile
 ```
 
