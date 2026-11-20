@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package gridforge.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Envelope v1. The server assigns the database id; producers do not send one.
+message Envelope {
+  uint32 schema_ver = 1; // must be 1 in Phase 0
+  string org_id = 2; // UUID string, must match configured org
+  string device_id = 3; // 1..128 chars, [A-Za-z0-9._:-]
+  int64 boot_count = 4; // >= 0
+  int64 seq = 5; // >= 0
+  google.protobuf.Timestamp device_ts = 6; // device clock, untrusted
+  bytes payload = 7; // max 32 KiB
+  string payload_type = 8; // MIME type, non-empty
+}

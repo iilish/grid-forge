@@ -3,4 +3,20 @@ name = "grid-forge"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = ["crates/contracts", "crates/store"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+prost = "0.14.6"
+prost-build = "0.14.6"
+prost-types = "0.14.6"
+protoc-bin-vendored = "3.3.0"
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "migrate", "macros"] }
+uuid = { version = "1.29.3", features = ["v7"] }
+
 [dependencies]
