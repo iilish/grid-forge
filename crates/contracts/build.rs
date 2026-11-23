@@ -2,7 +2,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
     let include = protoc_bin_vendored::include_path()?;
 
-    // prost-build reads the compiler from PROTOC. Edition 2024 marks set_var unsafe.
     unsafe {
         std::env::set_var("PROTOC", protoc);
     }

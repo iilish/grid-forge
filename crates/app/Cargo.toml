@@ -1,0 +1,12 @@
+[package]
+name = "gridforge-app"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+gridforge-domain = { path = "../domain" }
+gridforge-store = { path = "../store" }
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true

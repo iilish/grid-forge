@@ -14,7 +14,7 @@ check: lint test
 check-full: check test-db
 
 # Static checks; does not run tests
-lint: fmt-check clippy-check contracts-check openapi-check prove-lint
+lint: fmt-check clippy-check contracts-check openapi-check prove-lint layering-check
 
 # Check formatting without changing files
 fmt-check:
@@ -33,13 +33,17 @@ contracts-check:
 openapi-check:
     yq eval '.' crates/contracts/openapi/openapi.yaml > /dev/null
 
+# Layering scan; fails on violations
+layering-check:
+    cargo xtask check-layering
+
 # All tests via nextest
 test:
     cargo nextest run --workspace
 
 # Database integration tests against a disposable Postgres
 test-db:
-    scripts/with-postgres.sh cargo nextest run -p gridforge-store --features db-tests --test migrations
+    scripts/with-postgres.sh bash -c 'cargo nextest run -p gridforge-store --features db-tests --test migrations && cargo nextest run -p grid-forge --features db-tests --test walking_skeleton'
 
 # Run the proofs for gates 0..N against an environment: just prove 3 staging
 # Gates are delivery milestones; the runner calls them phases in its output.

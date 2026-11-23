@@ -7,5 +7,10 @@ edition.workspace = true
 db-tests = []
 
 [dependencies]
+chrono.workspace = true
+gridforge-domain = { path = "../domain" }
+sea-orm.workspace = true
 sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
 uuid.workspace = true
