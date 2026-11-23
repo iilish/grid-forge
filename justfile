@@ -49,15 +49,15 @@ test-db:
 # Gates are delivery milestones; the runner calls them phases in its output.
 # Add --allow-pending while a gate is under development.
 prove phase env="local" *flags:
-    prove/prove.sh {{phase}} {{env}} {{flags}}
+    cargo run -p gridforge-prove --quiet -- {{phase}} {{env}} {{flags}}
 
 # List every registered check
 prove-list:
-    prove/prove.sh --list
+    cargo run -p gridforge-prove --quiet -- --list
 
 # Verify registry and check implementations agree; also checks local planning docs when present
 prove-lint:
-    prove/prove.sh --lint
+    cargo run -p gridforge-prove --quiet -- --lint
 
 # Maintainer-only: print the filled-in AI prompt for a gate (requires local docs)
 phase-prompt n:

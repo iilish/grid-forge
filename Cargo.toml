@@ -10,6 +10,7 @@ members = [
     "crates/store",
     "crates/app",
     "crates/xtask",
+    "crates/prove",
 ]
 resolver = "3"
 
