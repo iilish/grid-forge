@@ -298,7 +298,7 @@ A run writes `prove/results/<timestamp>-local-p0.tsv`. Success: exit code 0 with
 
 #### `just prove-list`
 
-Prints every registered check from [`prove/registry.tsv`](prove/registry.tsv) with its ID, gate, kind and description. To add a proof, add a registry row and a `check_P<gate>_<kind><n>` function under `prove/checks/`; see [`prove/README.md`](prove/README.md).
+Prints every registered check from [`prove/registry.tsv`](prove/registry.tsv) with its ID, gate, kind, function name and description. To add a proof, add a registry row and a `pN_<what_the_check_proves>` function in `crates/prove/src/checks/pN.rs`; see [`crates/prove/README.md`](crates/prove/README.md).
 
 #### `just prove-lint`
 
@@ -328,13 +328,13 @@ A Helm chart packages the services, Argo CD runs in-cluster and syncs from the p
 ## Repository layout
 
 ```
-crates/{contracts,domain,store,ingest,processor,relay,web,simulator,bench,xtask}
+crates/{contracts,domain,store,ingest,processor,relay,web,simulator,bench,xtask,prove}
 deploy/helm/gridforge          one chart, per-service values
 deploy/envs/{staging,prod}     environment values and image digests
 infra/                         OpenTofu, from the AWS milestone
 ops/runbooks/                  one runbook per alert and drill
 bench/results/                 committed raw benchmark output
-prove/                         registry, checks, environments, results
+prove/                         registry, environments, results
 scripts/                       disposable test infrastructure
 .github/workflows/             CI gates
 justfile
