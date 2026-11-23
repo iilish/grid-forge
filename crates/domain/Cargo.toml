@@ -1,0 +1,9 @@
+[package]
+name = "gridforge-domain"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+chrono.workspace = true
+uuid.workspace = true

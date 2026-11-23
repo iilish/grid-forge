@@ -1,6 +1,3 @@
-// Migrations are embedded at compile time. The future `gridforge migrate`
-// command runs this migrator during deploy; the application never migrates on
-// startup.
 pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 #[cfg(test)]

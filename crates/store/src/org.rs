@@ -1,9 +1,5 @@
 use uuid::Uuid;
 
-/// The organization boundary for every repository operation.
-///
-/// Phase 0 has one tenant, but the type exists from the first migration so
-/// isolation does not depend on remembering to add it later.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct OrgScope(Uuid);
 

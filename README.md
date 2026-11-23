@@ -252,7 +252,7 @@ Success: exit code 0 with every static check, unit/contract test and database te
 
 #### `just test`
 
-Runs unit and contract tests with nextest. Database-backed migration tests are separate in `just test-db`, so `just test` stays fast and does not need Postgres.
+Runs unit and contract tests with nextest. Database-backed migration and persistence tests are separate in `just test-db`, so `just test` stays fast and does not need Postgres.
 
 ```bash
 cargo nextest run -p contracts
@@ -263,13 +263,13 @@ Success: exit code 0. Tests never modify your development data.
 
 #### `just test-db`
 
-Starts a disposable Postgres container, exports `DATABASE_URL`, runs the SQLx migration integration tests and removes the container. Requires Docker. It does not touch local stack data.
+Starts a disposable Postgres container, exports `DATABASE_URL`, runs the SQLx migration and walking-skeleton persistence tests, and removes the container. Requires Docker. It does not touch local stack data.
 
 ```bash
 just test-db
 ```
 
-Success: four migration tests pass: fresh schema, idempotent second run, `org_id uuid not null`, and down migration removing `events`.
+Success: six database tests pass: four migration tests (fresh schema, idempotent second run, `org_id uuid not null`, down migration removing `events`) and two persistence tests (one inserted event, newest 20 ordering).
 
 #### `just lint`
 
@@ -280,6 +280,7 @@ Runs static checks without modifying files:
 - `buf lint` and `buf format --diff --exit-code`
 - OpenAPI YAML parse with `yq`
 - `just prove-lint`
+- `cargo xtask check-layering` (fails on violations)
 
 Dependency audits, SQLx prepared-query checks, proto breaking checks and Helm/Kubernetes validation are added when those artifacts exist. Success: exit code 0. Fix formatting with `cargo fmt --all`; fix contract or manifest errors at the source. The full lint set needs the tools listed under [Prerequisites](#prerequisites).
 
