@@ -329,6 +329,7 @@ A Helm chart packages the services, Argo CD runs in-cluster and syncs from the p
 
 ```
 crates/{contracts,domain,store,ingest,processor,relay,web,simulator,bench,xtask,prove}
+crates/simulator               gridforge-simulator Envelope v1 load generator
 deploy/helm/gridforge          one chart, per-service values
 deploy/envs/{staging,prod}     environment values and image digests
 infra/                         OpenTofu, from the AWS milestone

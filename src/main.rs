@@ -9,6 +9,7 @@ use tracing_subscriber::EnvFilter;
 
 use grid_forge::config::Config;
 use grid_forge::http;
+use grid_forge::self_test;
 use gridforge_app::worker;
 use gridforge_app::{AppState, ChannelSink, Db, EventSink, Metrics};
 use gridforge_domain::OrgScope;
@@ -20,15 +21,18 @@ const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 async fn main() -> Result<()> {
     init_tracing();
 
-    let command = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "serve".to_string());
+    let mut args = std::env::args().skip(1);
+    let command = args.next().unwrap_or_else(|| "serve".to_string());
 
     match command.as_str() {
         "serve" => serve().await,
         "migrate" => migrate().await,
+        "self-test" => match self_test::run(args.next()).await {
+            Ok(()) => Ok(()),
+            Err(_) => std::process::exit(1),
+        },
         other => {
-            eprintln!("usage: gridforge [serve|migrate]");
+            eprintln!("usage: gridforge [serve|migrate|self-test <name>]");
             anyhow::bail!("unknown command: {other}");
         }
     }

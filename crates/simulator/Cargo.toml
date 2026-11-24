@@ -1,0 +1,17 @@
+[package]
+name = "gridforge-simulator"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[bin]]
+name = "gridforge-simulator"
+path = "src/main.rs"
+
+[dependencies]
+chrono.workspace = true
+gridforge-contracts = { path = "../contracts" }
+prost.workspace = true
+prost-types.workspace = true
+ureq = "3.5.2"
+uuid.workspace = true

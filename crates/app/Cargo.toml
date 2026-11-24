@@ -4,8 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+chrono.workspace = true
+gridforge-contracts = { path = "../contracts" }
 gridforge-domain = { path = "../domain" }
 gridforge-store = { path = "../store" }
+prost-types.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true

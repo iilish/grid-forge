@@ -5,6 +5,8 @@ use gridforge_store::StoreError;
 
 #[derive(Debug, Error)]
 pub enum AppError {
+    #[error("invalid envelope: {0}")]
+    Validation(String),
     #[error("event sink unavailable: {0}")]
     Sink(#[from] SinkError),
     #[error("store operation failed: {0}")]
@@ -14,6 +16,7 @@ pub enum AppError {
 impl AppError {
     pub fn slug(&self) -> &'static str {
         match self {
+            Self::Validation(_) => "invalid-envelope",
             Self::Sink(_) => "sink-unavailable",
             Self::Store(_) => "store-unavailable",
         }
@@ -21,6 +24,7 @@ impl AppError {
 
     pub fn title(&self) -> &'static str {
         match self {
+            Self::Validation(_) => "Invalid envelope",
             Self::Sink(_) => "Event sink unavailable",
             Self::Store(_) => "Store unavailable",
         }
@@ -28,12 +32,16 @@ impl AppError {
 
     pub fn detail(&self) -> String {
         match self {
+            Self::Validation(detail) => detail.clone(),
             Self::Sink(error) => format!("event sink is {}", error.reason()),
             Self::Store(error) => error.to_string(),
         }
     }
 
     pub fn retry_after(&self) -> Option<u64> {
-        Some(1)
+        match self {
+            Self::Validation(_) => None,
+            Self::Sink(_) | Self::Store(_) => Some(1),
+        }
     }
 }

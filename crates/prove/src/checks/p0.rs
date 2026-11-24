@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
 use std::sync::LazyLock;
@@ -106,10 +107,8 @@ fn p0_merge_to_staging_lead_time_recorded(_ctx: &Ctx) -> Result<CheckOutcome, Ch
     ))
 }
 
-fn p0_channel_full_drops_are_counted(_ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
-    Ok(CheckOutcome::Pending(
-        "needs the channel-full self-test (`gridforge self-test channel-full`)".to_string(),
-    ))
+fn p0_channel_full_drops_are_counted(ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
+    run_self_test(ctx, "channel-full")
 }
 
 fn p0_page_build_sha_is_current(_ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
@@ -149,16 +148,73 @@ fn p0_running_image_is_signed_and_scanned(_ctx: &Ctx) -> Result<CheckOutcome, Ch
     ))
 }
 
-fn p0_worker_retry_exhaustion_is_counted(_ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
-    Ok(CheckOutcome::Pending(
-        "needs the DB-retry self-test (`gridforge self-test db-retry`)".to_string(),
-    ))
+fn p0_worker_retry_exhaustion_is_counted(ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
+    run_self_test(ctx, "db-retry")
 }
 
-fn p0_readyz_is_not_ready_while_draining(_ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
-    Ok(CheckOutcome::Pending(
-        "needs the drain self-test (`gridforge self-test drain`)".to_string(),
-    ))
+fn p0_readyz_is_not_ready_while_draining(ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
+    run_self_test(ctx, "drain")
+}
+
+fn run_self_test(ctx: &Ctx, self_test: &str) -> Result<CheckOutcome, CheckError> {
+    let root = repo_root();
+    let (program, arguments) = match ctx.get("GRIDFORGE_BIN").filter(|value| !value.is_empty()) {
+        Some(binary) => (
+            PathBuf::from(binary),
+            vec!["self-test".to_string(), self_test.to_string()],
+        ),
+        None => (
+            PathBuf::from(std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())),
+            vec![
+                "run".to_string(),
+                "-p".to_string(),
+                "grid-forge".to_string(),
+                "--quiet".to_string(),
+                "--".to_string(),
+                "self-test".to_string(),
+                self_test.to_string(),
+            ],
+        ),
+    };
+
+    let output = Command::new(&program)
+        .args(&arguments)
+        .current_dir(&root)
+        .output()
+        .map_err(|error| {
+            CheckError::new(format!(
+                "failed to run `{} {}`: {error}",
+                program.display(),
+                arguments.join(" ")
+            ))
+        })?;
+
+    if !output.status.success() {
+        let mut reason = format!(
+            "`{} {}` exited with {}",
+            program.display(),
+            arguments.join(" "),
+            output.status
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.trim().is_empty() {
+            reason.push_str(&format!("\nstdout:\n{}", stdout.trim()));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.trim().is_empty() {
+            reason.push_str(&format!("\nstderr:\n{}", stderr.trim()));
+        }
+        return Err(CheckError::new(reason));
+    }
+
+    Ok(CheckOutcome::Pass)
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .to_path_buf()
 }
 
 fn p0_rollback_to_previous_digest_is_recorded(_ctx: &Ctx) -> Result<CheckOutcome, CheckError> {

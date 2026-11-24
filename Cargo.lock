@@ -863,7 +863,10 @@ dependencies = [
  "axum",
  "chrono",
  "gridforge-app",
+ "gridforge-contracts",
  "gridforge-domain",
+ "prost",
+ "prost-types",
  "serde",
  "serde_json",
  "tokio",
@@ -878,8 +881,11 @@ dependencies = [
 name = "gridforge-app"
 version = "0.1.0"
 dependencies = [
+ "chrono",
+ "gridforge-contracts",
  "gridforge-domain",
  "gridforge-store",
+ "prost-types",
  "thiserror",
  "tokio",
  "tracing",
@@ -914,6 +920,18 @@ dependencies = [
  "serde_json",
  "thiserror",
  "ureq",
+]
+
+[[package]]
+name = "gridforge-simulator"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "gridforge-contracts",
+ "prost",
+ "prost-types",
+ "ureq",
+ "uuid",
 ]
 
 [[package]]
