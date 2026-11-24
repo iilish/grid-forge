@@ -53,14 +53,14 @@ Full verification and cluster workflows:
 
 You need macOS, Linux, or Windows with WSL2. Node and pnpm are **not** required; the UI is server-rendered Rust.
 
-No port conflicts: the stack uses 8080, 5432 and 9092 by default.
+No port conflicts: the stack uses 8080 and 5432 by default; 9092 is added with the telemetry milestone.
 
 ## What `just up` starts
 
 `just up`:
 
 1. Checks that Docker is running.
-2. Starts Postgres and the Kafka-compatible broker in containers.
+2. Starts Postgres in a container. The Kafka-compatible broker is added with the telemetry milestone.
 3. Builds the GridForge image locally.
 4. Applies database migrations.
 5. Starts the GridForge web and ingest process.
@@ -226,7 +226,7 @@ Start with the Quickstart. The commands below are the stable developer interface
 
 #### `just up`
 
-Starts Postgres, the Kafka-compatible broker, applies migrations and starts GridForge. Requires Docker. Creates a named data volume. It does not start the simulator. Success: `/healthz` and `/readyz` return 200 and the console loads. Inspect startup with `just logs`.
+Starts Postgres, applies migrations and starts GridForge. The Kafka-compatible broker is added with the telemetry milestone. Requires Docker. Creates a named data volume. It does not start the simulator. Success: `/healthz` and `/readyz` return 200 and the console loads. Inspect startup with `just logs`.
 
 #### `just down`
 
@@ -323,7 +323,7 @@ A Helm chart packages the services, Argo CD runs in-cluster and syncs from the p
 - **Postgres.** SeaORM for entities and ordinary CRUD; SQLx for migrations and hot paths where explicit SQL is clearer or measurably faster.
 - **Kafka-compatible transport.** Redpanda locally; the contract is versioned Protobuf topics.
 - **Kubernetes.** One Helm chart, Argo CD, digest-based promotion and signed images.
-- **Proof harness.** Shell checks with stable IDs, recorded results and a registry that must match the implementations.
+- **Proof runner.** Rust checks with stable IDs, recorded results and a registry that must match the implementations.
 
 ## Repository layout
 
@@ -338,6 +338,8 @@ bench/results/                 committed raw benchmark output
 prove/                         registry, environments, results
 scripts/                       disposable test infrastructure
 .github/workflows/             CI gates
+Dockerfile                     release image build
+compose.yaml                   local stack: Postgres, migrations, app
 justfile
 ```
 
