@@ -8,15 +8,32 @@ use crate::metrics::Metrics;
 use crate::port::EventSink;
 
 #[derive(Clone)]
-pub struct AppState {
-    pub db: Db,
+pub struct IngestCtx {
     pub sink: Arc<dyn EventSink>,
     pub metrics: Arc<Metrics>,
-    pub org_id: OrgScope,
+    pub org: OrgScope,
+}
+
+#[derive(Clone)]
+pub struct HealthCtx {
+    pub db: Db,
     pub draining: Arc<AtomicBool>,
 }
 
-impl AppState {
+#[derive(Clone)]
+pub struct QueryCtx {
+    pub db: Db,
+    pub org: OrgScope,
+}
+
+#[derive(Clone)]
+pub struct AppContext {
+    pub ingest: IngestCtx,
+    pub health: HealthCtx,
+    pub query: QueryCtx,
+}
+
+impl AppContext {
     pub fn new(
         db: Db,
         sink: Arc<dyn EventSink>,
@@ -25,11 +42,16 @@ impl AppState {
         draining: Arc<AtomicBool>,
     ) -> Self {
         Self {
-            db,
-            sink,
-            metrics,
-            org_id,
-            draining,
+            ingest: IngestCtx {
+                sink,
+                metrics,
+                org: org_id,
+            },
+            health: HealthCtx {
+                db: db.clone(),
+                draining,
+            },
+            query: QueryCtx { db, org: org_id },
         }
     }
 }

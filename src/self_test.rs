@@ -3,12 +3,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, anyhow, ensure};
+use chrono::Utc;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use gridforge_app::{
-    AppError, AppState, ChannelSink, Db, EventPersister, EventSink, Metrics, SinkError,
-    create_test_event, readiness, worker,
+    AppContext, AppError, ChannelSink, Db, EventPersister, EventSink, EventStamp, Metrics,
+    SinkError, create_test_event, readiness, worker,
 };
 use gridforge_domain::{NewEvent, OrgScope};
 
@@ -37,16 +38,17 @@ pub async fn run(name: Option<String>) -> Result<()> {
 }
 
 async fn channel_full() -> Result<()> {
-    let (state, _receiver) = state_with_capacity(1).await?;
+    let (ctx, _receiver) = state_with_capacity(1).await?;
 
-    create_test_event(&state).map_err(|error| anyhow!("first send failed: {error}"))?;
-    let error = create_test_event(&state).expect_err("second send must fail on a full channel");
+    create_test_event(&ctx.ingest).map_err(|error| anyhow!("first send failed: {error}"))?;
+    let error =
+        create_test_event(&ctx.ingest).expect_err("second send must fail on a full channel");
     ensure!(
         matches!(error, AppError::Sink(SinkError::Full)),
         "second send returned {error:?}, expected sink full"
     );
 
-    let rendered = state.metrics.render();
+    let rendered = ctx.ingest.metrics.render();
     ensure!(
         rendered.contains("events_dropped_total{reason=\"channel_full\"} 1"),
         "channel_full drop was not counted:\n{rendered}"
@@ -68,7 +70,7 @@ async fn db_retry() -> Result<()> {
 
     let (sender, receiver) = mpsc::channel(1);
     let sink: Arc<dyn EventSink> = Arc::new(ChannelSink::new(sender));
-    sink.try_send(NewEvent::test())
+    sink.try_send(EventStamp::new(Utc::now(), Uuid::now_v7(), org.get()).test_event())
         .map_err(|error| anyhow!("queue event: {error}"))?;
     drop(sink);
 
@@ -106,15 +108,15 @@ async fn drain() -> Result<()> {
 
     let (sender, receiver) = mpsc::channel(8);
     let sink: Arc<dyn EventSink> = Arc::new(ChannelSink::new(sender));
-    let state = AppState::new(db, sink.clone(), metrics.clone(), org, draining.clone());
+    let ctx = AppContext::new(db, sink.clone(), metrics.clone(), org, draining.clone());
 
     for _ in 0..5 {
-        sink.try_send(NewEvent::test())
+        sink.try_send(EventStamp::new(Utc::now(), Uuid::now_v7(), org.get()).test_event())
             .map_err(|error| anyhow!("queue event: {error}"))?;
     }
 
     draining.store(true, Ordering::SeqCst);
-    let report = readiness(&state).await;
+    let report = readiness(&ctx).await;
     ensure!(report.draining, "readiness did not report draining");
     ensure!(
         !(report.db_up && !report.draining),
@@ -127,7 +129,7 @@ async fn drain() -> Result<()> {
         metrics.clone(),
         org,
     ));
-    drop(state);
+    drop(ctx);
     drop(sink);
     worker
         .await
@@ -147,12 +149,12 @@ async fn drain() -> Result<()> {
     Ok(())
 }
 
-async fn state_with_capacity(capacity: usize) -> Result<(AppState, mpsc::Receiver<NewEvent>)> {
+async fn state_with_capacity(capacity: usize) -> Result<(AppContext, mpsc::Receiver<NewEvent>)> {
     let db = Db::lazy(UNREACHABLE_DATABASE)
         .await
         .map_err(|error| anyhow!("create lazy pool: {error}"))?;
     let (sender, receiver) = mpsc::channel(capacity);
-    let state = AppState::new(
+    let ctx = AppContext::new(
         db,
         Arc::new(ChannelSink::new(sender)),
         Arc::new(Metrics::default()),
@@ -160,7 +162,7 @@ async fn state_with_capacity(capacity: usize) -> Result<(AppState, mpsc::Receive
         Arc::new(AtomicBool::new(false)),
     );
 
-    Ok((state, receiver))
+    Ok((ctx, receiver))
 }
 
 fn sentinel_org() -> OrgScope {

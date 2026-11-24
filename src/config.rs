@@ -35,13 +35,25 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
-        let database_url = env::var("DATABASE_URL").map_err(|_| ConfigError::DatabaseUrlMissing)?;
-        let http_addr = env::var("GRIDFORGE_HTTP_ADDR")
-            .unwrap_or_else(|_| DEFAULT_HTTP_ADDR.to_string())
+        Self::from_raw(
+            env::var("DATABASE_URL").ok(),
+            env::var("GRIDFORGE_HTTP_ADDR").ok(),
+            env::var("GRIDFORGE_ORG_ID").ok(),
+        )
+    }
+
+    pub fn from_raw(
+        database_url: Option<String>,
+        http_addr: Option<String>,
+        org_id: Option<String>,
+    ) -> Result<Self, ConfigError> {
+        let database_url = database_url.ok_or(ConfigError::DatabaseUrlMissing)?;
+        let http_addr = http_addr
+            .unwrap_or_else(|| DEFAULT_HTTP_ADDR.to_string())
             .parse()
             .map_err(|_| ConfigError::InvalidHttpAddr)?;
-        let org_id = env::var("GRIDFORGE_ORG_ID")
-            .unwrap_or_else(|_| DEFAULT_ORG_ID.to_string())
+        let org_id = org_id
+            .unwrap_or_else(|| DEFAULT_ORG_ID.to_string())
             .parse()
             .map_err(|_| ConfigError::InvalidOrgId)?;
 
@@ -50,5 +62,55 @@ impl Config {
             http_addr,
             org_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_raw_applies_defaults() {
+        let config = Config::from_raw(
+            Some("postgres://localhost/gridforge".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(config.database_url, "postgres://localhost/gridforge");
+        assert_eq!(
+            config.http_addr,
+            DEFAULT_HTTP_ADDR.parse::<SocketAddr>().unwrap()
+        );
+        assert_eq!(config.org_id, DEFAULT_ORG_ID.parse::<Uuid>().unwrap());
+    }
+
+    #[test]
+    fn from_raw_rejects_a_missing_database_url() {
+        let error = Config::from_raw(None, None, None).unwrap_err();
+        assert_eq!(error.to_string(), "DATABASE_URL must be set");
+    }
+
+    #[test]
+    fn from_raw_rejects_invalid_values() {
+        let error = Config::from_raw(
+            Some("postgres://localhost/gridforge".to_string()),
+            Some("not-a-socket-addr".to_string()),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "GRIDFORGE_HTTP_ADDR must be a socket address"
+        );
+
+        let error = Config::from_raw(
+            Some("postgres://localhost/gridforge".to_string()),
+            None,
+            Some("not-a-uuid".to_string()),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "GRIDFORGE_ORG_ID must be a UUID");
     }
 }

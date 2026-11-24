@@ -69,15 +69,21 @@ impl EventSink for ChannelSink {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gridforge_domain::NewEvent;
+    use crate::ingest::EventStamp;
+    use chrono::Utc;
+    use uuid::Uuid;
+
+    fn event() -> NewEvent {
+        EventStamp::new(Utc::now(), Uuid::now_v7(), Uuid::nil()).test_event()
+    }
 
     #[test]
     fn full_channel_reports_full() {
         let (sender, _receiver) = mpsc::channel(1);
         let sink = ChannelSink::new(sender);
 
-        assert!(sink.try_send(NewEvent::test()).is_ok());
-        assert_eq!(sink.try_send(NewEvent::test()), Err(SinkError::Full));
+        assert!(sink.try_send(event()).is_ok());
+        assert_eq!(sink.try_send(event()), Err(SinkError::Full));
     }
 
     #[test]
@@ -86,6 +92,6 @@ mod tests {
         drop(receiver);
         let sink = ChannelSink::new(sender);
 
-        assert_eq!(sink.try_send(NewEvent::test()), Err(SinkError::Closed));
+        assert_eq!(sink.try_send(event()), Err(SinkError::Closed));
     }
 }

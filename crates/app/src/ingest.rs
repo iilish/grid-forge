@@ -1,76 +1,113 @@
 use chrono::{DateTime, Utc};
 use gridforge_contracts::Envelope;
-use gridforge_domain::NewEvent;
-use gridforge_store::{RecentEvent, StoreError};
+use gridforge_domain::{NewEvent, resolve_device_ts};
 use prost_types::Timestamp;
 use uuid::Uuid;
 
-use crate::error::AppError;
-use crate::metrics::Route;
-use crate::state::AppState;
+use crate::error::{AppError, ValidationError};
+use crate::metrics::{DropReason, Route};
+use crate::port::SinkError;
+use crate::state::IngestCtx;
 
 const MAX_DEVICE_ID_CHARS: usize = 128;
 const MAX_PAYLOAD_BYTES: usize = 32 * 1024;
 
-pub fn create_ingest_event(state: &AppState, envelope: &Envelope) -> Result<Uuid, AppError> {
-    enqueue(state, envelope, Route::Ingest)
+pub fn create_ingest_event(ingest: &IngestCtx, envelope: &Envelope) -> Result<Uuid, AppError> {
+    enqueue(ingest, envelope, Route::Ingest)
 }
 
-pub fn create_test_event(state: &AppState) -> Result<Uuid, AppError> {
-    let now = Utc::now();
-    let envelope = Envelope {
-        schema_ver: 1,
-        org_id: state.org_id.to_string(),
-        device_id: "test-button".to_string(),
-        boot_count: 0,
-        seq: now.timestamp_millis(),
-        device_ts: Some(Timestamp {
-            seconds: now.timestamp(),
-            nanos: now.timestamp_subsec_nanos() as i32,
-        }),
-        payload: format!("test-{}", Uuid::now_v7()).into_bytes(),
-        payload_type: "text/plain".to_string(),
-    };
+pub fn create_test_event(ingest: &IngestCtx) -> Result<Uuid, AppError> {
+    let stamp = EventStamp::new(Utc::now(), Uuid::now_v7(), ingest.org.get());
+    let envelope = stamp.test_envelope();
 
-    enqueue(state, &envelope, Route::Test)
+    enqueue(ingest, &envelope, Route::Test)
 }
 
-fn enqueue(state: &AppState, envelope: &Envelope, route: Route) -> Result<Uuid, AppError> {
-    validate(state.org_id.get(), envelope)?;
+pub struct EventStamp {
+    pub now: DateTime<Utc>,
+    pub id: Uuid,
+    pub org: Uuid,
+}
 
-    let event = NewEvent {
-        id: Uuid::now_v7(),
-        device_id: envelope.device_id.clone(),
-        boot_count: envelope.boot_count,
-        seq: envelope.seq,
-        schema_ver: envelope.schema_ver as i32,
-        device_ts: device_ts(envelope)?,
-        ingest_ts: Utc::now(),
-        payload: envelope.payload.clone(),
-        payload_type: envelope.payload_type.clone(),
-    };
+impl EventStamp {
+    pub fn new(now: DateTime<Utc>, id: Uuid, org: Uuid) -> Self {
+        Self { now, id, org }
+    }
+
+    pub fn test_envelope(&self) -> Envelope {
+        Envelope {
+            schema_ver: 1,
+            org_id: self.org.to_string(),
+            device_id: "test-button".to_string(),
+            boot_count: 0,
+            seq: self.now.timestamp_millis(),
+            device_ts: Some(Timestamp {
+                seconds: self.now.timestamp(),
+                nanos: self.now.timestamp_subsec_nanos() as i32,
+            }),
+            payload: format!("test-{}", self.id).into_bytes(),
+            payload_type: "text/plain".to_string(),
+        }
+    }
+
+    pub fn test_event(&self) -> NewEvent {
+        self.test_envelope()
+            .to_event(self)
+            .expect("test envelope is valid")
+    }
+}
+
+pub trait EnvelopeExt {
+    fn to_event(&self, stamp: &EventStamp) -> Result<NewEvent, ValidationError>;
+}
+
+impl EnvelopeExt for Envelope {
+    fn to_event(&self, stamp: &EventStamp) -> Result<NewEvent, ValidationError> {
+        validate(stamp.org, self)?;
+
+        Ok(NewEvent {
+            id: stamp.id,
+            device_id: self.device_id.clone(),
+            boot_count: self.boot_count,
+            seq: self.seq,
+            schema_ver: self.schema_ver as i32,
+            device_ts: resolve_device_ts(device_ts(self)?, stamp.now),
+            ingest_ts: stamp.now,
+            payload: self.payload.clone(),
+            payload_type: self.payload_type.clone(),
+        })
+    }
+}
+
+fn enqueue(ingest: &IngestCtx, envelope: &Envelope, route: Route) -> Result<Uuid, AppError> {
+    let stamp = EventStamp::new(Utc::now(), Uuid::now_v7(), ingest.org.get());
+    let event = envelope.to_event(&stamp)?;
     let id = event.id;
 
-    match state.sink.try_send(event) {
+    match ingest.sink.try_send(event) {
         Ok(()) => {
-            state.metrics.event_enqueued(route);
+            ingest.metrics.event_enqueued(route);
             Ok(id)
         }
         Err(error) => {
-            state.metrics.event_dropped(error.reason());
+            let reason = match error {
+                SinkError::Full => DropReason::ChannelFull,
+                SinkError::Closed => DropReason::ChannelClosed,
+            };
+            ingest.metrics.event_dropped(reason);
             Err(AppError::from(error))
         }
     }
 }
 
-fn validate(org_id: Uuid, envelope: &Envelope) -> Result<(), AppError> {
+fn validate(org: Uuid, envelope: &Envelope) -> Result<(), ValidationError> {
     if envelope.schema_ver != 1 {
         return Err(invalid("schema_ver must be 1"));
     }
 
     let envelope_org_id =
         Uuid::parse_str(&envelope.org_id).map_err(|_| invalid("org_id must be a UUID string"))?;
-    if envelope_org_id != org_id {
+    if envelope_org_id != org {
         return Err(invalid("org_id must match the configured org"));
     }
 
@@ -103,20 +140,19 @@ fn validate(org_id: Uuid, envelope: &Envelope) -> Result<(), AppError> {
     Ok(())
 }
 
-fn device_ts(envelope: &Envelope) -> Result<DateTime<Utc>, AppError> {
+fn device_ts(envelope: &Envelope) -> Result<Option<DateTime<Utc>>, ValidationError> {
     match envelope.device_ts {
         Some(timestamp) => DateTime::from_timestamp(timestamp.seconds, timestamp.nanos as u32)
+            .map(Some)
             .ok_or_else(|| invalid("device_ts must be a valid timestamp")),
-        None => Ok(Utc::now()),
+        None => Ok(None),
     }
 }
 
-fn invalid(detail: &str) -> AppError {
-    AppError::Validation(detail.to_string())
-}
-
-pub async fn recent_events(state: &AppState, limit: i64) -> Result<Vec<RecentEvent>, StoreError> {
-    state.db.recent_events(state.org_id, limit).await
+fn invalid(detail: &str) -> ValidationError {
+    ValidationError {
+        detail: detail.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -127,24 +163,25 @@ mod tests {
     use super::*;
     use crate::metrics::{Metrics, Route};
     use crate::port::ChannelSink;
+    use crate::state::AppContext;
     use gridforge_domain::OrgScope;
 
     const ORG: Uuid = Uuid::from_u128(1);
 
-    async fn state() -> (AppState, tokio::sync::mpsc::Receiver<NewEvent>) {
+    async fn state() -> (AppContext, tokio::sync::mpsc::Receiver<NewEvent>) {
         let db = gridforge_store::Db::lazy("postgres://127.0.0.1:1/gridforge")
             .await
             .unwrap();
 
         let (sender, receiver) = tokio::sync::mpsc::channel(4);
-        let state = AppState::new(
+        let ctx = AppContext::new(
             db,
             Arc::new(ChannelSink::new(sender)),
             Arc::new(Metrics::default()),
             OrgScope::new(ORG),
             Arc::new(AtomicBool::new(false)),
         );
-        (state, receiver)
+        (ctx, receiver)
     }
 
     fn valid_envelope() -> Envelope {
@@ -169,8 +206,8 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let (state, _receiver) = state().await;
-            let error = create_ingest_event(&state, &envelope).unwrap_err();
+            let (ctx, _receiver) = state().await;
+            let error = create_ingest_event(&ctx.ingest, &envelope).unwrap_err();
             assert!(
                 matches!(error, AppError::Validation(_)),
                 "expected validation error, got {error:?}"
@@ -180,17 +217,57 @@ mod tests {
     }
 
     #[test]
+    fn build_event_uses_now_when_device_ts_is_missing() {
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let mut envelope = valid_envelope();
+        envelope.device_ts = None;
+
+        let event = envelope
+            .to_event(&EventStamp::new(now, Uuid::from_u128(7), ORG))
+            .unwrap();
+
+        assert_eq!(event.device_ts, now);
+        assert_eq!(event.ingest_ts, now);
+    }
+
+    #[test]
+    fn build_event_rejects_invalid_device_ts() {
+        let mut envelope = valid_envelope();
+        envelope.device_ts = Some(Timestamp {
+            seconds: i64::MAX,
+            nanos: 0,
+        });
+
+        let error = envelope
+            .to_event(&EventStamp::new(Utc::now(), Uuid::from_u128(7), ORG))
+            .unwrap_err();
+        assert_eq!(error.detail, "device_ts must be a valid timestamp");
+    }
+
+    #[test]
+    fn test_event_is_valid_and_carries_the_id_in_the_payload() {
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let id = Uuid::from_u128(7);
+
+        let event = EventStamp::new(now, id, ORG).test_event();
+
+        assert_eq!(event.id, id);
+        assert_eq!(event.payload, format!("test-{id}").into_bytes());
+        assert_eq!(event.device_id, "test-button");
+    }
+
+    #[test]
     fn accepts_a_valid_envelope() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         runtime.block_on(async {
-            let (state, _receiver) = state().await;
-            let id = create_ingest_event(&state, &valid_envelope()).unwrap();
+            let (ctx, _receiver) = state().await;
+            let id = create_ingest_event(&ctx.ingest, &valid_envelope()).unwrap();
             assert_eq!(id.get_version_num(), 7);
             assert!(
-                state
+                ctx.ingest
                     .metrics
                     .render()
                     .contains("events_received_total{route=\"ingest\"} 1")
@@ -261,13 +338,13 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let (state, _receiver) = state().await;
+            let (ctx, _receiver) = state().await;
             let mut envelope = valid_envelope();
             envelope.payload = vec![0; MAX_PAYLOAD_BYTES];
-            assert!(create_ingest_event(&state, &envelope).is_ok());
+            assert!(create_ingest_event(&ctx.ingest, &envelope).is_ok());
 
             envelope.payload = vec![0; MAX_PAYLOAD_BYTES + 1];
-            let error = create_ingest_event(&state, &envelope).unwrap_err();
+            let error = create_ingest_event(&ctx.ingest, &envelope).unwrap_err();
             assert!(error.detail().contains("payload"));
         });
     }
@@ -286,10 +363,10 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let (state, _receiver) = state().await;
-            create_test_event(&state).unwrap();
+            let (ctx, _receiver) = state().await;
+            create_test_event(&ctx.ingest).unwrap();
             assert!(
-                state
+                ctx.ingest
                     .metrics
                     .render()
                     .contains("events_received_total{route=\"test\"} 1")

@@ -22,6 +22,23 @@ impl Route {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropReason {
+    ChannelFull,
+    ChannelClosed,
+    DbError,
+}
+
+impl DropReason {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ChannelFull => "channel_full",
+            Self::ChannelClosed => "channel_closed",
+            Self::DbError => "db_error",
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Metrics {
     events_received_test: AtomicU64,
@@ -64,17 +81,16 @@ impl Metrics {
         self.events_persisted.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn event_dropped(&self, reason: &str) {
+    pub fn event_dropped(&self, reason: DropReason) {
         let counter = match reason {
-            "channel_full" => &self.dropped_channel_full,
-            "channel_closed" => &self.dropped_channel_closed,
-            "db_error" => &self.dropped_db_error,
-            _ => return,
+            DropReason::ChannelFull => &self.dropped_channel_full,
+            DropReason::ChannelClosed => &self.dropped_channel_closed,
+            DropReason::DbError => &self.dropped_db_error,
         };
         counter.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn write_failed(&self, attempt: usize) {
+    pub fn write_failed(&self, attempt: u32) {
         let counter = match attempt {
             1 => &self.write_failure_1,
             2 => &self.write_failure_2,
@@ -249,7 +265,7 @@ mod tests {
         let metrics = Metrics::default();
         metrics.event_enqueued(Route::Test);
         metrics.event_enqueued(Route::Ingest);
-        metrics.event_dropped("channel_full");
+        metrics.event_dropped(DropReason::ChannelFull);
         metrics.write_failed(2);
         metrics.observe_http("GET", "/", "2xx", Duration::from_millis(20));
 

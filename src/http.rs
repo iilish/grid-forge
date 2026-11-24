@@ -18,7 +18,7 @@ use tower_http::trace::TraceLayer;
 use tracing::error;
 
 use gridforge_app::{
-    AppError, AppState, Metrics, RecentEvent, create_ingest_event, create_test_event, readiness,
+    AppContext, AppError, Metrics, RecentEvent, create_ingest_event, create_test_event, readiness,
     recent_events,
 };
 use gridforge_contracts::Envelope;
@@ -30,8 +30,8 @@ const BODY_LIMIT: usize = 64 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const DASHBOARD_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub fn router(state: AppState) -> Router {
-    let metrics = state.metrics.clone();
+pub fn router(ctx: AppContext) -> Router {
+    let metrics = ctx.ingest.metrics.clone();
 
     Router::new()
         .route("/", get(index))
@@ -50,7 +50,7 @@ pub fn router(state: AppState) -> Router {
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(middleware::from_fn_with_state(metrics, track_http))
         .layer(middleware::from_fn(map_layer_errors))
-        .with_state(state)
+        .with_state(ctx)
 }
 
 async fn map_layer_errors(request: Request, next: Next) -> Response {
@@ -141,9 +141,9 @@ fn status_class(status: StatusCode) -> &'static str {
     }
 }
 
-async fn index(State(state): State<AppState>) -> Response {
+async fn index(State(ctx): State<AppContext>) -> Response {
     let (db_up, events) =
-        match tokio::time::timeout(DASHBOARD_TIMEOUT, recent_events(&state, 20)).await {
+        match tokio::time::timeout(DASHBOARD_TIMEOUT, recent_events(&ctx.query, 20)).await {
             Ok(Ok(events)) => (true, events),
             Ok(Err(error)) => {
                 error!(error = %error, "dashboard query failed");
@@ -159,8 +159,8 @@ async fn index(State(state): State<AppState>) -> Response {
     ([(CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response()
 }
 
-async fn events_test(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    match create_test_event(&state) {
+async fn events_test(State(ctx): State<AppContext>, headers: HeaderMap) -> Response {
+    match create_test_event(&ctx.ingest) {
         Ok(id) => {
             if wants_json(&headers) {
                 (StatusCode::ACCEPTED, Json(serde_json::json!({ "id": id }))).into_response()
@@ -187,7 +187,7 @@ fn app_error_status(error: &AppError) -> StatusCode {
     }
 }
 
-async fn ingest(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+async fn ingest(State(ctx): State<AppContext>, headers: HeaderMap, body: Bytes) -> Response {
     if !is_protobuf(&headers) {
         return problem(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -215,7 +215,7 @@ async fn ingest(State(state): State<AppState>, headers: HeaderMap, body: Bytes) 
         }
     };
 
-    match create_ingest_event(&state, &envelope) {
+    match create_ingest_event(&ctx.ingest, &envelope) {
         Ok(id) => (StatusCode::ACCEPTED, Json(serde_json::json!({ "id": id }))).into_response(),
         Err(error) => problem(
             app_error_status(&error),
@@ -233,8 +233,8 @@ async fn healthz() -> impl IntoResponse {
     ([(CONTENT_TYPE, "text/plain; charset=utf-8")], "ok")
 }
 
-async fn readyz(State(state): State<AppState>) -> Response {
-    let report = readiness(&state).await;
+async fn readyz(State(ctx): State<AppContext>) -> Response {
+    let report = readiness(&ctx).await;
     let ready = report.db_up && !report.draining;
 
     let body = Readiness {
@@ -258,10 +258,10 @@ async fn readyz(State(state): State<AppState>) -> Response {
     (status, Json(body)).into_response()
 }
 
-async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn metrics_handler(State(ctx): State<AppContext>) -> impl IntoResponse {
     (
         [(CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
-        state.metrics.render(),
+        ctx.ingest.metrics.render(),
     )
 }
 
@@ -446,7 +446,7 @@ mod tests {
     use tower::ServiceExt;
     use uuid::Uuid;
 
-    use gridforge_app::{ChannelSink, Db};
+    use gridforge_app::{ChannelSink, Db, EventStamp};
     use gridforge_domain::{NewEvent, OrgScope};
 
     #[test]
@@ -477,7 +477,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_body_returns_problem_json() {
-        let (state, _receiver) = test_state().await;
+        let (ctx, _receiver) = test_state().await;
         let request = Request::builder()
             .method("POST")
             .uri("/events/test")
@@ -485,7 +485,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let response = router(state).oneshot(request).await.unwrap();
+        let response = router(ctx).oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(
@@ -535,16 +535,16 @@ mod tests {
         assert_eq!(problem["status"], 504);
     }
 
-    async fn test_state() -> (AppState, mpsc::Receiver<NewEvent>) {
+    async fn test_state() -> (AppContext, mpsc::Receiver<NewEvent>) {
         state_with_capacity(4).await
     }
 
-    async fn state_with_capacity(capacity: usize) -> (AppState, mpsc::Receiver<NewEvent>) {
+    async fn state_with_capacity(capacity: usize) -> (AppContext, mpsc::Receiver<NewEvent>) {
         let db = Db::lazy("postgres://gridforge:gridforge@localhost:5432/gridforge")
             .await
             .unwrap();
         let (sender, receiver) = mpsc::channel(capacity);
-        let state = AppState::new(
+        let ctx = AppContext::new(
             db,
             Arc::new(ChannelSink::new(sender)),
             Arc::new(Metrics::default()),
@@ -552,7 +552,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
         );
 
-        (state, receiver)
+        (ctx, receiver)
     }
 
     fn valid_envelope() -> Envelope {
@@ -589,10 +589,10 @@ mod tests {
 
     #[tokio::test]
     async fn ingest_accepts_valid_envelope() {
-        let (state, _receiver) = test_state().await;
+        let (ctx, _receiver) = test_state().await;
         let request = ingest_request(valid_envelope().encode_to_vec());
 
-        let response = router(state).oneshot(request).await.unwrap();
+        let response = router(ctx).oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::ACCEPTED);
         assert_eq!(
@@ -608,7 +608,7 @@ mod tests {
 
     #[tokio::test]
     async fn ingest_rejects_wrong_content_type() {
-        let (state, _receiver) = test_state().await;
+        let (ctx, _receiver) = test_state().await;
         let request = Request::builder()
             .method("POST")
             .uri("/ingest")
@@ -616,7 +616,7 @@ mod tests {
             .body(Body::from("{}"))
             .unwrap();
 
-        let response = router(state).oneshot(request).await.unwrap();
+        let response = router(ctx).oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
         assert_eq!(
@@ -633,10 +633,10 @@ mod tests {
 
     #[tokio::test]
     async fn ingest_rejects_malformed_protobuf() {
-        let (state, _receiver) = test_state().await;
+        let (ctx, _receiver) = test_state().await;
         let request = ingest_request(vec![0xff]);
 
-        let response = router(state).oneshot(request).await.unwrap();
+        let response = router(ctx).oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let problem = problem_body(response).await;
@@ -646,11 +646,11 @@ mod tests {
 
     #[tokio::test]
     async fn ingest_rejects_invalid_envelope() {
-        let (state, _receiver) = test_state().await;
+        let (ctx, _receiver) = test_state().await;
         let mut envelope = valid_envelope();
         envelope.schema_ver = 2;
 
-        let response = router(state)
+        let response = router(ctx)
             .oneshot(ingest_request(envelope.encode_to_vec()))
             .await
             .unwrap();
@@ -666,10 +666,13 @@ mod tests {
 
     #[tokio::test]
     async fn ingest_returns_503_when_sink_is_full() {
-        let (state, _receiver) = state_with_capacity(1).await;
-        state.sink.try_send(NewEvent::test()).unwrap();
+        let (ctx, _receiver) = state_with_capacity(1).await;
+        ctx.ingest
+            .sink
+            .try_send(EventStamp::new(Utc::now(), Uuid::now_v7(), Uuid::nil()).test_event())
+            .unwrap();
 
-        let response = router(state)
+        let response = router(ctx)
             .oneshot(ingest_request(valid_envelope().encode_to_vec()))
             .await
             .unwrap();
@@ -683,10 +686,10 @@ mod tests {
 
     #[tokio::test]
     async fn ingest_returns_503_when_sink_is_closed() {
-        let (state, receiver) = test_state().await;
+        let (ctx, receiver) = test_state().await;
         drop(receiver);
 
-        let response = router(state)
+        let response = router(ctx)
             .oneshot(ingest_request(valid_envelope().encode_to_vec()))
             .await
             .unwrap();
@@ -699,9 +702,9 @@ mod tests {
 
     #[tokio::test]
     async fn events_test_redirects_browsers() {
-        let (state, _receiver) = test_state().await;
+        let (ctx, _receiver) = test_state().await;
 
-        let response = router(state)
+        let response = router(ctx)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -718,9 +721,9 @@ mod tests {
 
     #[tokio::test]
     async fn events_test_returns_json_for_json_clients() {
-        let (state, _receiver) = test_state().await;
+        let (ctx, _receiver) = test_state().await;
 
-        let response = router(state)
+        let response = router(ctx)
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -742,10 +745,13 @@ mod tests {
 
     #[tokio::test]
     async fn events_test_returns_503_when_sink_is_full() {
-        let (state, _receiver) = state_with_capacity(1).await;
-        state.sink.try_send(NewEvent::test()).unwrap();
+        let (ctx, _receiver) = state_with_capacity(1).await;
+        ctx.ingest
+            .sink
+            .try_send(EventStamp::new(Utc::now(), Uuid::now_v7(), Uuid::nil()).test_event())
+            .unwrap();
 
-        let response = router(state)
+        let response = router(ctx)
             .oneshot(
                 Request::builder()
                     .method("POST")
