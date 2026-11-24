@@ -10,8 +10,8 @@ use tower::ServiceExt;
 use uuid::Uuid;
 
 use grid_forge::http::router;
-use gridforge_app::{AppState, ChannelSink, Db, EventSink, Metrics, worker};
-use gridforge_domain::{NewEvent, OrgScope};
+use gridforge_app::{AppContext, ChannelSink, Db, EventSink, EventStamp, Metrics, worker};
+use gridforge_domain::OrgScope;
 
 async fn test_db() -> Db {
     let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
@@ -24,7 +24,7 @@ async fn test_db() -> Db {
 async fn worker_persists_one_row() {
     let db = test_db().await;
     let org = OrgScope::from(Uuid::now_v7());
-    let event = NewEvent::test();
+    let event = EventStamp::new(Utc::now(), Uuid::now_v7(), org.get()).test_event();
 
     db.insert_event(org, &event).await.expect("insert event");
 
@@ -42,7 +42,7 @@ async fn dashboard_orders_recent_events() {
     let base = Utc::now();
 
     for index in 0..25 {
-        let mut event = NewEvent::test();
+        let mut event = EventStamp::new(Utc::now(), Uuid::now_v7(), org.get()).test_event();
         event.ingest_ts = base + Duration::seconds(index);
         db.insert_event(org, &event).await.expect("insert event");
     }
@@ -63,14 +63,14 @@ async fn readyz_is_503_while_draining_and_healthz_stays_200() {
     let (sender, _receiver) = tokio::sync::mpsc::channel(1);
     let sink: Arc<dyn EventSink> = Arc::new(ChannelSink::new(sender));
 
-    let state = AppState::new(
+    let ctx = AppContext::new(
         db,
         sink,
         Arc::new(Metrics::default()),
         org,
         draining.clone(),
     );
-    let app = router(state);
+    let app = router(ctx);
 
     let ready = app
         .clone()
@@ -122,7 +122,7 @@ async fn worker_retries_three_times_then_counts_failure() {
     let db = test_db().await;
     let org = OrgScope::from(Uuid::now_v7());
     let metrics = Arc::new(Metrics::default());
-    let event = NewEvent::test();
+    let event = EventStamp::new(Utc::now(), Uuid::now_v7(), org.get()).test_event();
 
     db.insert_event(org, &event)
         .await
@@ -157,7 +157,8 @@ async fn worker_drains_five_events_before_exit() {
     let sink: Arc<dyn EventSink> = Arc::new(ChannelSink::new(sender));
 
     for _ in 0..5 {
-        sink.try_send(NewEvent::test()).expect("queue event");
+        sink.try_send(EventStamp::new(Utc::now(), Uuid::now_v7(), org.get()).test_event())
+            .expect("queue event");
     }
     drop(sink);
 
@@ -178,7 +179,7 @@ async fn worker_drains_five_events_before_exit() {
 async fn duplicate_device_seq_events_are_both_stored() {
     let db = test_db().await;
     let org = OrgScope::from(Uuid::now_v7());
-    let first = NewEvent::test();
+    let first = EventStamp::new(Utc::now(), Uuid::now_v7(), org.get()).test_event();
     let mut second = first.clone();
     second.id = Uuid::now_v7();
 

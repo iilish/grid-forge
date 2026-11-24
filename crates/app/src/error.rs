@@ -13,6 +13,17 @@ pub enum AppError {
     Store(#[from] StoreError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationError {
+    pub detail: String,
+}
+
+impl From<ValidationError> for AppError {
+    fn from(error: ValidationError) -> Self {
+        Self::Validation(error.detail)
+    }
+}
+
 impl AppError {
     pub fn slug(&self) -> &'static str {
         match self {

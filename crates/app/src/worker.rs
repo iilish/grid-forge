@@ -5,8 +5,31 @@ use gridforge_domain::{NewEvent, OrgScope};
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
-use crate::metrics::Metrics;
+use crate::metrics::{DropReason, Metrics};
 use crate::port::EventPersister;
+
+const MAX_ATTEMPTS: u32 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistOutcome {
+    Transient,
+    Permanent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetryAction {
+    Retry { delay_ms: u64 },
+    Drop,
+}
+
+pub fn retry_next(attempt: u32, outcome: PersistOutcome) -> RetryAction {
+    match outcome {
+        PersistOutcome::Transient if attempt < MAX_ATTEMPTS => RetryAction::Retry {
+            delay_ms: 100 * u64::from(attempt),
+        },
+        _ => RetryAction::Drop,
+    }
+}
 
 pub async fn run<P>(
     mut receiver: mpsc::Receiver<NewEvent>,
@@ -19,30 +42,34 @@ pub async fn run<P>(
     while let Some(event) = receiver.recv().await {
         let mut persisted = false;
 
-        for attempt in 1..=3 {
+        for attempt in 1..=MAX_ATTEMPTS {
             match persister.insert_event(org, &event).await {
                 Ok(()) => {
                     metrics.event_persisted();
                     persisted = true;
                     break;
                 }
-                Err(error) => {
+                Err(store_error) => {
                     metrics.write_failed(attempt);
                     warn!(
                         event_id = %event.id,
                         attempt,
-                        error = %error,
+                        error = %store_error,
                         "event insert failed"
                     );
-                    if attempt < 3 {
-                        tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
+                    let outcome = PersistOutcome::Transient;
+                    match retry_next(attempt, outcome) {
+                        RetryAction::Retry { delay_ms } => {
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        }
+                        RetryAction::Drop => break,
                     }
                 }
             }
         }
 
         if !persisted {
-            metrics.event_dropped("db_error");
+            metrics.event_dropped(DropReason::DbError);
             error!(
                 event_id = %event.id,
                 "event dropped after three failed inserts"
@@ -57,7 +84,9 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use crate::ingest::EventStamp;
     use crate::port::EventPersister;
+    use chrono::Utc;
 
     #[derive(Clone, Default)]
     struct FakePersister {
@@ -79,24 +108,38 @@ mod tests {
         }
     }
 
+    #[test]
+    fn transient_failures_retry_with_100ms_backoff_until_the_third_attempt() {
+        assert_eq!(
+            retry_next(1, PersistOutcome::Transient),
+            RetryAction::Retry { delay_ms: 100 }
+        );
+        assert_eq!(
+            retry_next(2, PersistOutcome::Transient),
+            RetryAction::Retry { delay_ms: 200 }
+        );
+        assert_eq!(retry_next(3, PersistOutcome::Transient), RetryAction::Drop);
+    }
+
+    #[test]
+    fn permanent_failures_drop_immediately() {
+        assert_eq!(retry_next(1, PersistOutcome::Permanent), RetryAction::Drop);
+    }
+
     #[tokio::test]
     async fn drains_five_events_without_a_database() {
         let persister = FakePersister::default();
         let metrics = Arc::new(Metrics::default());
         let (sender, receiver) = mpsc::channel(8);
+        let org = OrgScope::new(uuid::Uuid::from_u128(1));
 
         for _ in 0..5 {
-            sender.send(NewEvent::test()).await.unwrap();
+            let event = EventStamp::new(Utc::now(), uuid::Uuid::now_v7(), org.get()).test_event();
+            sender.send(event).await.unwrap();
         }
         drop(sender);
 
-        run(
-            receiver,
-            persister.clone(),
-            metrics.clone(),
-            OrgScope::new(uuid::Uuid::from_u128(1)),
-        )
-        .await;
+        run(receiver, persister.clone(), metrics.clone(), org).await;
 
         assert_eq!(persister.ids.lock().unwrap().len(), 5);
         assert!(metrics.render().contains("events_persisted_total 5"));

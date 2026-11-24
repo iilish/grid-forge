@@ -11,7 +11,7 @@ use grid_forge::config::Config;
 use grid_forge::http;
 use grid_forge::self_test;
 use gridforge_app::worker;
-use gridforge_app::{AppState, ChannelSink, Db, EventSink, Metrics};
+use gridforge_app::{AppContext, ChannelSink, Db, EventSink, Metrics};
 use gridforge_domain::OrgScope;
 
 const CHANNEL_CAPACITY: usize = 256;
@@ -73,8 +73,8 @@ async fn serve() -> Result<()> {
     let org = OrgScope::from(config.org_id);
     let worker = tokio::spawn(worker::run(receiver, db.clone(), metrics.clone(), org));
 
-    let state = AppState::new(db.clone(), sink, metrics, org, draining.clone());
-    let app = http::router(state.clone());
+    let ctx = AppContext::new(db.clone(), sink, metrics, org, draining.clone());
+    let app = http::router(ctx.clone());
     let listener = TcpListener::bind(config.http_addr)
         .await
         .with_context(|| format!("bind {}", config.http_addr))?;
@@ -90,7 +90,7 @@ async fn serve() -> Result<()> {
         .await
         .context("serve HTTP")?;
 
-    drop(state);
+    drop(ctx);
 
     match tokio::time::timeout(DRAIN_TIMEOUT, worker).await {
         Ok(Ok(())) => info!("worker drained"),
