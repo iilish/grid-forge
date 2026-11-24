@@ -1,0 +1,9 @@
+target
+.git
+.github
+.agents
+AGENTS.md
+docs
+prove/results
+.env
+.DS_Store

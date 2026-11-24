@@ -7,6 +7,18 @@ default:
 build:
     cargo build --workspace
 
+# Start the local stack: Postgres, migrations and GridForge
+up:
+    docker compose up -d --build --wait --wait-timeout 180
+
+# Stop the local stack; keeps volumes. Use: just down --volumes
+down *flags:
+    docker compose down {{flags}}
+
+# Follow local stack logs; optionally one service: just logs gridforge
+logs *service:
+    docker compose logs -f {{service}}
+
 # Fast local gate: static checks plus unit and contract tests; no Docker
 check: lint test
 
