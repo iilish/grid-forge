@@ -2,6 +2,7 @@ use std::fmt::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use axum::body::Bytes;
 use axum::extract::{Request, State};
 use axum::http::header::{ACCEPT, CONTENT_TYPE, RETRY_AFTER};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -16,7 +17,12 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::error;
 
-use gridforge_app::{AppState, Metrics, RecentEvent, create_test_event, readiness, recent_events};
+use gridforge_app::{
+    AppError, AppState, Metrics, RecentEvent, create_ingest_event, create_test_event, readiness,
+    recent_events,
+};
+use gridforge_contracts::Envelope;
+use prost::Message;
 
 use crate::BUILD_SHA;
 
@@ -30,6 +36,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/events/test", post(events_test))
+        .route("/ingest", post(ingest))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_handler))
@@ -115,6 +122,7 @@ fn route_label(path: &str) -> &'static str {
     match path {
         "/" => "/",
         "/events/test" => "/events/test",
+        "/ingest" => "/ingest",
         "/healthz" => "/healthz",
         "/readyz" => "/readyz",
         "/metrics" => "/metrics",
@@ -161,11 +169,60 @@ async fn events_test(State(state): State<AppState>, headers: HeaderMap) -> Respo
             }
         }
         Err(error) => problem(
-            StatusCode::SERVICE_UNAVAILABLE,
+            app_error_status(&error),
             error.slug(),
             error.title(),
             &error.detail(),
             "/events/test",
+            &headers,
+            error.retry_after(),
+        ),
+    }
+}
+
+fn app_error_status(error: &AppError) -> StatusCode {
+    match error {
+        AppError::Validation(_) => StatusCode::UNPROCESSABLE_ENTITY,
+        AppError::Sink(_) | AppError::Store(_) => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+async fn ingest(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
+    if !is_protobuf(&headers) {
+        return problem(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "unsupported-media-type",
+            "Unsupported media type",
+            "content type must be application/x-protobuf",
+            "/ingest",
+            &headers,
+            None,
+        );
+    }
+
+    let envelope = match Envelope::decode(body.as_ref()) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            return problem(
+                StatusCode::BAD_REQUEST,
+                "malformed-protobuf",
+                "Malformed protobuf",
+                &error.to_string(),
+                "/ingest",
+                &headers,
+                None,
+            );
+        }
+    };
+
+    match create_ingest_event(&state, &envelope) {
+        Ok(id) => (StatusCode::ACCEPTED, Json(serde_json::json!({ "id": id }))).into_response(),
+        Err(error) => problem(
+            app_error_status(&error),
+            error.slug(),
+            error.title(),
+            &error.detail(),
+            "/ingest",
             &headers,
             error.retry_after(),
         ),
@@ -206,6 +263,19 @@ async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
         [(CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
         state.metrics.render(),
     )
+}
+
+fn is_protobuf(headers: &HeaderMap) -> bool {
+    headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(';').next().is_some_and(|media_type| {
+                media_type
+                    .trim()
+                    .eq_ignore_ascii_case("application/x-protobuf")
+            })
+        })
 }
 
 fn wants_json(headers: &HeaderMap) -> bool {
@@ -466,10 +536,14 @@ mod tests {
     }
 
     async fn test_state() -> (AppState, mpsc::Receiver<NewEvent>) {
+        state_with_capacity(4).await
+    }
+
+    async fn state_with_capacity(capacity: usize) -> (AppState, mpsc::Receiver<NewEvent>) {
         let db = Db::lazy("postgres://gridforge:gridforge@localhost:5432/gridforge")
             .await
             .unwrap();
-        let (sender, receiver) = mpsc::channel(4);
+        let (sender, receiver) = mpsc::channel(capacity);
         let state = AppState::new(
             db,
             Arc::new(ChannelSink::new(sender)),
@@ -479,5 +553,211 @@ mod tests {
         );
 
         (state, receiver)
+    }
+
+    fn valid_envelope() -> Envelope {
+        Envelope {
+            schema_ver: 1,
+            org_id: Uuid::nil().to_string(),
+            device_id: "device-1".to_string(),
+            boot_count: 0,
+            seq: 1,
+            device_ts: Some(prost_types::Timestamp {
+                seconds: Utc::now().timestamp(),
+                nanos: 0,
+            }),
+            payload: b"hello".to_vec(),
+            payload_type: "text/plain".to_string(),
+        }
+    }
+
+    fn ingest_request(body: Vec<u8>) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/ingest")
+            .header(CONTENT_TYPE, "application/x-protobuf")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    async fn problem_body(response: Response) -> serde_json::Value {
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn ingest_accepts_valid_envelope() {
+        let (state, _receiver) = test_state().await;
+        let request = ingest_request(valid_envelope().encode_to_vec());
+
+        let response = router(state).oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "application/json"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(Uuid::parse_str(json["id"].as_str().unwrap()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn ingest_rejects_wrong_content_type() {
+        let (state, _receiver) = test_state().await;
+        let request = Request::builder()
+            .method("POST")
+            .uri("/ingest")
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+
+        let response = router(state).oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).unwrap(),
+            "application/problem+json"
+        );
+        let problem = problem_body(response).await;
+        assert_eq!(
+            problem["type"],
+            "urn:gridforge:problem:unsupported-media-type"
+        );
+        assert_eq!(problem["status"], 415);
+    }
+
+    #[tokio::test]
+    async fn ingest_rejects_malformed_protobuf() {
+        let (state, _receiver) = test_state().await;
+        let request = ingest_request(vec![0xff]);
+
+        let response = router(state).oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let problem = problem_body(response).await;
+        assert_eq!(problem["type"], "urn:gridforge:problem:malformed-protobuf");
+        assert_eq!(problem["status"], 400);
+    }
+
+    #[tokio::test]
+    async fn ingest_rejects_invalid_envelope() {
+        let (state, _receiver) = test_state().await;
+        let mut envelope = valid_envelope();
+        envelope.schema_ver = 2;
+
+        let response = router(state)
+            .oneshot(ingest_request(envelope.encode_to_vec()))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(response.headers().get(RETRY_AFTER).is_none());
+        let problem = problem_body(response).await;
+        assert_eq!(problem["type"], "urn:gridforge:problem:invalid-envelope");
+        assert_eq!(problem["title"], "Invalid envelope");
+        assert_eq!(problem["status"], 422);
+        assert_eq!(problem["detail"], "schema_ver must be 1");
+    }
+
+    #[tokio::test]
+    async fn ingest_returns_503_when_sink_is_full() {
+        let (state, _receiver) = state_with_capacity(1).await;
+        state.sink.try_send(NewEvent::test()).unwrap();
+
+        let response = router(state)
+            .oneshot(ingest_request(valid_envelope().encode_to_vec()))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "1");
+        let problem = problem_body(response).await;
+        assert_eq!(problem["type"], "urn:gridforge:problem:sink-unavailable");
+        assert_eq!(problem["status"], 503);
+    }
+
+    #[tokio::test]
+    async fn ingest_returns_503_when_sink_is_closed() {
+        let (state, receiver) = test_state().await;
+        drop(receiver);
+
+        let response = router(state)
+            .oneshot(ingest_request(valid_envelope().encode_to_vec()))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "1");
+        let problem = problem_body(response).await;
+        assert_eq!(problem["type"], "urn:gridforge:problem:sink-unavailable");
+    }
+
+    #[tokio::test]
+    async fn events_test_redirects_browsers() {
+        let (state, _receiver) = test_state().await;
+
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/events/test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers().get("location").unwrap(), "/");
+    }
+
+    #[tokio::test]
+    async fn events_test_returns_json_for_json_clients() {
+        let (state, _receiver) = test_state().await;
+
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/events/test")
+                    .header(ACCEPT, "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(Uuid::parse_str(json["id"].as_str().unwrap()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn events_test_returns_503_when_sink_is_full() {
+        let (state, _receiver) = state_with_capacity(1).await;
+        state.sink.try_send(NewEvent::test()).unwrap();
+
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/events/test")
+                    .header(ACCEPT, "application/json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "1");
     }
 }

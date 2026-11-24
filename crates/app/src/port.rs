@@ -1,8 +1,10 @@
 use std::fmt;
+use std::future::Future;
 
 use tokio::sync::mpsc;
 
-use gridforge_domain::NewEvent;
+use gridforge_domain::{NewEvent, OrgScope};
+use gridforge_store::{Db, StoreError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SinkError {
@@ -29,6 +31,20 @@ impl std::error::Error for SinkError {}
 
 pub trait EventSink: Send + Sync {
     fn try_send(&self, event: NewEvent) -> Result<(), SinkError>;
+}
+
+pub trait EventPersister: Send + Sync {
+    fn insert_event(
+        &self,
+        org: OrgScope,
+        event: &NewEvent,
+    ) -> impl Future<Output = Result<(), StoreError>> + Send;
+}
+
+impl EventPersister for Db {
+    async fn insert_event(&self, org: OrgScope, event: &NewEvent) -> Result<(), StoreError> {
+        Db::insert_event(self, org, event).await
+    }
 }
 
 pub struct ChannelSink {

@@ -20,7 +20,12 @@ fn check_layering() {
     let mut violations = 0;
 
     violations += scan_files(
-        &["src/http.rs", "src/main.rs", "tests/walking_skeleton.rs"],
+        &[
+            "src/http.rs",
+            "src/main.rs",
+            "src/self_test.rs",
+            "tests/walking_skeleton.rs",
+        ],
         FORBIDDEN_IN_ADAPTERS,
         "adapter",
     );

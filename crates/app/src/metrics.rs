@@ -7,9 +7,25 @@ use std::time::Duration;
 const BUCKETS: [f64; 9] = [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5];
 const BUCKET_COUNT: usize = BUCKETS.len();
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Route {
+    Test,
+    Ingest,
+}
+
+impl Route {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+            Self::Ingest => "ingest",
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Metrics {
     events_received_test: AtomicU64,
+    events_received_ingest: AtomicU64,
     events_persisted: AtomicU64,
     dropped_channel_full: AtomicU64,
     dropped_channel_closed: AtomicU64,
@@ -36,8 +52,12 @@ struct Histogram {
 }
 
 impl Metrics {
-    pub fn event_enqueued(&self) {
-        self.events_received_test.fetch_add(1, Ordering::Relaxed);
+    pub fn event_enqueued(&self, route: Route) {
+        let counter = match route {
+            Route::Test => &self.events_received_test,
+            Route::Ingest => &self.events_received_ingest,
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn event_persisted(&self) {
@@ -95,8 +115,15 @@ impl Metrics {
             &mut out,
             "events_received_total",
             "Events accepted by the sink.",
-            &[("route", "test")],
+            &[("route", Route::Test.label())],
             &self.events_received_test,
+        );
+        counter(
+            &mut out,
+            "events_received_total",
+            "Events accepted by the sink.",
+            &[("route", Route::Ingest.label())],
+            &self.events_received_ingest,
         );
         counter(
             &mut out,
@@ -220,7 +247,8 @@ mod tests {
     #[test]
     fn renders_counters_and_histogram() {
         let metrics = Metrics::default();
-        metrics.event_enqueued();
+        metrics.event_enqueued(Route::Test);
+        metrics.event_enqueued(Route::Ingest);
         metrics.event_dropped("channel_full");
         metrics.write_failed(2);
         metrics.observe_http("GET", "/", "2xx", Duration::from_millis(20));
@@ -228,6 +256,7 @@ mod tests {
         let rendered = metrics.render();
 
         assert!(rendered.contains("events_received_total{route=\"test\"} 1"));
+        assert!(rendered.contains("events_received_total{route=\"ingest\"} 1"));
         assert!(rendered.contains("events_dropped_total{reason=\"channel_full\"} 1"));
         assert!(rendered.contains("events_write_failures_total{attempt=\"2\"} 1"));
         assert!(rendered.contains(
