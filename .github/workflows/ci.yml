@@ -45,15 +45,21 @@ jobs:
           version: 1.75.0
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Go for yq
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v4.3.2
+
+      - name: Install Go for CLI checks
         uses: actions/setup-go@v5
         with:
           go-version: stable
           cache: false
 
-      - name: Install yq
+      - name: Install yq and kubeconform
         run: |
           go install github.com/mikefarah/yq/v4@v4.53.3
+          go install github.com/yannh/kubeconform/cmd/kubeconform@v0.8.0
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Run full gate

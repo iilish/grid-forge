@@ -46,6 +46,7 @@ Full verification and cluster workflows:
 | **buf** | 1.75+ | Protobuf lint and later breaking-change checks. |
 | **yq** | Mike Farah v4.53+ | OpenAPI YAML parse check. |
 | **Helm** | 4.3+ | Chart lint and local Kubernetes deployment. |
+| **kubeconform** | 0.8+ | Kubernetes schema validation for the Helm chart. |
 | **kubectl** | 1.32+ | Inspecting local clusters and proof jobs. |
 | **k3d** | 5.9+ | Local Kubernetes without a separate VM. |
 | **cosign**, **trivy**, **syft** | 3.1+, 0.76+, 1.57+ | Release signing, scanning and SBOM checks. |
@@ -236,6 +237,10 @@ Stops and removes local containers. Keeps Postgres and broker volumes. Use `just
 
 Follows logs from the local stack. `just logs` follows everything; `just logs postgres` follows one service.
 
+#### `just port-forward`
+
+Forwards a local port to the GridForge Kubernetes service. `just port-forward` maps `8080:8080`; `just port-forward 8090` maps local `8090` to the service's `8080`. It uses the current kubectl namespace unless `NAMESPACE` is set, and the service name defaults to `gridforge`; override with `RELEASE`. Requires a running cluster and deployment.
+
 #### `just build`
 
 Builds every workspace member with `cargo build --workspace`. Runs build scripts, including Protobuf code generation for `gridforge-contracts`. Success: exit code 0 and `target/debug/` contains the generated code and binaries. It does not run tests.
@@ -279,10 +284,15 @@ Runs static checks without modifying files:
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `buf lint` and `buf format --diff --exit-code`
 - OpenAPI YAML parse with `yq`
+- `helm lint` and `kubeconform` for the chart (`just helm-check`)
 - `just prove-lint`
 - `cargo xtask check-layering` (fails on violations)
 
-Dependency audits, SQLx prepared-query checks, proto breaking checks and Helm/Kubernetes validation are added when those artifacts exist. Success: exit code 0. Fix formatting with `cargo fmt --all`; fix contract or manifest errors at the source. The full lint set needs the tools listed under [Prerequisites](#prerequisites).
+Dependency audits, SQLx prepared-query checks and proto breaking checks are added when those artifacts exist. Success: exit code 0. Fix formatting with `cargo fmt --all`; fix contract or manifest errors at the source. The full lint set needs the tools listed under [Prerequisites](#prerequisites).
+
+#### `just helm-check`
+
+Lints the GridForge Helm chart with the staging and prod values, then renders each release and validates it against the Kubernetes 1.32 schema with kubeconform. It does not install anything into a cluster. Success: both `helm lint` runs and both kubeconform runs print summaries with no invalid resources.
 
 #### `just simulator`
 
