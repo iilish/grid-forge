@@ -1,0 +1,12 @@
+GridForge is deployed as {{ include "gridforge.fullname" . }}.
+
+The service is cluster-internal on port {{ .Values.service.port }}.
+Forward it locally with:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "gridforge.fullname" . }} 8080:{{ .Values.service.port }}
+
+Or from a checkout of this repository:
+
+  NAMESPACE={{ .Release.Namespace }} RELEASE={{ include "gridforge.fullname" . }} just port-forward {{ .Values.service.port }}
+
+Then open http://localhost:8080/.

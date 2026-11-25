@@ -19,6 +19,11 @@ down *flags:
 logs *service:
     docker compose logs -f {{service}}
 
+# Forward a local port to the GridForge Kubernetes service
+# Use: just port-forward 8090
+port-forward local_port="8080" target_port="8080":
+    kubectl ${NAMESPACE:+-n "$NAMESPACE"} port-forward "svc/${RELEASE:-gridforge}" "{{local_port}}:{{target_port}}"
+
 # Fast local gate: static checks plus unit and contract tests; no Docker
 check: lint test
 
@@ -26,7 +31,7 @@ check: lint test
 check-full: check test-db
 
 # Static checks; does not run tests
-lint: fmt-check clippy-check contracts-check openapi-check prove-lint layering-check
+lint: fmt-check clippy-check contracts-check openapi-check helm-check prove-lint layering-check
 
 # Check formatting without changing files
 fmt-check:
@@ -44,6 +49,13 @@ contracts-check:
 # YAML/OpenAPI parse smoke check
 openapi-check:
     yq eval '.' crates/contracts/openapi/openapi.yaml > /dev/null
+
+# Helm lint and Kubernetes schema validation
+helm-check:
+    helm lint deploy/helm/gridforge -f deploy/envs/staging/values.yaml
+    helm lint deploy/helm/gridforge -f deploy/envs/prod/values.yaml
+    helm template gridforge deploy/helm/gridforge -f deploy/envs/staging/values.yaml --namespace staging | kubeconform -strict -summary -kubernetes-version 1.32.0
+    helm template gridforge deploy/helm/gridforge -f deploy/envs/prod/values.yaml --namespace prod | kubeconform -strict -summary -kubernetes-version 1.32.0
 
 # Layering scan; fails on violations
 layering-check:

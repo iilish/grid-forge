@@ -1,0 +1,37 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/iilish/grid-forge
+  tag: dev
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+buildSha: dev
+
+orgId: "00000000-0000-0000-0000-000000000001"
+
+database:
+  existingSecret: gridforge-db
+  existingSecretKey: database-url
+
+httpAddr: "0.0.0.0:8080"
+logFilter: "info,gridforge=debug"
+
+service:
+  type: ClusterIP
+  port: 8080
+
+resources: {}
+
+migration:
+  enabled: true
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
