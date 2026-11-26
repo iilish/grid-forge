@@ -1,0 +1,22 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gridforge-postgres-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/part-of: gridforge
+    app.kubernetes.io/component: database
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/iilish/grid-forge.git
+    targetRevision: main
+    path: deploy/postgres
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: prod
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
