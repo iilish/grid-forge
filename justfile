@@ -31,7 +31,7 @@ check: lint test
 check-full: check test-db
 
 # Static checks; does not run tests
-lint: fmt-check clippy-check contracts-check openapi-check helm-check prove-lint layering-check
+lint: fmt-check clippy-check contracts-check openapi-check helm-check postgres-check argocd-check prove-lint layering-check
 
 # Check formatting without changing files
 fmt-check:
@@ -56,6 +56,15 @@ helm-check:
     helm lint deploy/helm/gridforge -f deploy/envs/prod/values.yaml
     helm template gridforge deploy/helm/gridforge -f deploy/envs/staging/values.yaml --namespace staging | kubeconform -strict -summary -kubernetes-version 1.32.0
     helm template gridforge deploy/helm/gridforge -f deploy/envs/prod/values.yaml --namespace prod | kubeconform -strict -summary -kubernetes-version 1.32.0
+
+# Validate the Postgres manifest against the Kubernetes schema
+postgres-check:
+    kubectl kustomize deploy/postgres | kubeconform -strict -summary -kubernetes-version 1.32.0
+    kubeconform -strict -summary -kubernetes-version 1.32.0 deploy/postgres/storageclass.yaml
+
+# Validate Argo CD application manifests
+argocd-check:
+    kubectl kustomize deploy/argocd/apps | kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.32.0
 
 # Layering scan; fails on violations
 layering-check:

@@ -46,7 +46,7 @@ Full verification and cluster workflows:
 | **buf** | 1.75+ | Protobuf lint and later breaking-change checks. |
 | **yq** | Mike Farah v4.53+ | OpenAPI YAML parse check. |
 | **Helm** | 4.3+ | Chart lint and local Kubernetes deployment. |
-| **kubeconform** | 0.8+ | Kubernetes schema validation for the Helm chart. |
+| **kubeconform** | 0.8+ | Kubernetes schema validation for the Helm chart and Postgres manifests. |
 | **kubectl** | 1.32+ | Inspecting local clusters and proof jobs. |
 | **k3d** | 5.9+ | Local Kubernetes without a separate VM. |
 | **cosign**, **trivy**, **syft** | 3.1+, 0.76+, 1.57+ | Release signing, scanning and SBOM checks. |
@@ -285,6 +285,8 @@ Runs static checks without modifying files:
 - `buf lint` and `buf format --diff --exit-code`
 - OpenAPI YAML parse with `yq`
 - `helm lint` and `kubeconform` for the chart (`just helm-check`)
+- `kubeconform` for the Postgres manifest (`just postgres-check`)
+- `kubeconform` for the Argo CD Applications (`just argocd-check`)
 - `just prove-lint`
 - `cargo xtask check-layering` (fails on violations)
 
@@ -293,6 +295,14 @@ Dependency audits, SQLx prepared-query checks and proto breaking checks are adde
 #### `just helm-check`
 
 Lints the GridForge Helm chart with the staging and prod values, then renders each release and validates it against the Kubernetes 1.32 schema with kubeconform. It does not install anything into a cluster. Success: both `helm lint` runs and both kubeconform runs print summaries with no invalid resources.
+
+#### `just postgres-check`
+
+Renders `deploy/postgres` with Kustomize and validates the StatefulSet, Service and cluster-scoped Retain StorageClass against the Kubernetes 1.32 schema. It does not install anything into a cluster. See `deploy/postgres/README.md` for the out-of-band secret and apply commands.
+
+#### `just argocd-check`
+
+Renders `deploy/argocd/apps` with Kustomize and validates the Argo CD Application manifests. The Application CRD schema is skipped because it is not part of the Kubernetes core schemas. It does not install anything into a cluster.
 
 #### `just simulator`
 
@@ -341,6 +351,8 @@ A Helm chart packages the services, Argo CD runs in-cluster and syncs from the p
 crates/{contracts,domain,store,ingest,processor,relay,web,simulator,bench,xtask,prove}
 crates/simulator               gridforge-simulator Envelope v1 load generator
 deploy/helm/gridforge          one chart, per-service values
+deploy/postgres                Postgres StatefulSet, Service and Retain StorageClass
+deploy/argocd/apps             Argo CD Applications
 deploy/envs/{staging,prod}     environment values and image digests
 infra/                         OpenTofu, from the AWS milestone
 ops/runbooks/                  one runbook per alert and drill
