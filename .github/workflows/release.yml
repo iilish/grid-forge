@@ -1,0 +1,365 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  PROOF_IMAGE: ghcr.io/${{ github.repository }}-proof
+  COSIGN_VERSION: v3.1.6
+  CRANE_VERSION: v0.22.1
+  SYFT_VERSION: v1.57.2
+  TRIVY_VERSION: v0.76.2
+
+jobs:
+  build-app:
+    name: build-app
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: docker/setup-qemu-action@v4.4.0
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v4.4.1
+
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: sigstore/cosign-installer@v4.1.4
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - uses: actions/setup-go@v7.1.0
+        with:
+          go-version: "1.27.4"
+          cache: false
+
+      - name: Install Syft and Crane
+        run: |
+          go install github.com/anchore/syft/cmd/syft@${{ env.SYFT_VERSION }}
+          go install github.com/google/go-containerregistry/cmd/crane@${{ env.CRANE_VERSION }}
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Build and push app image
+        id: build
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          build-args: BUILD_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=app
+          cache-to: type=gha,mode=max,scope=app
+
+      - name: Verify registry digest
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}:${{ github.sha }}
+          EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          actual="$(crane digest "$IMAGE_REF")"
+          test "$actual" = "$EXPECTED_DIGEST"
+
+      - name: Scan and generate app SBOMs
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for platform in linux/amd64 linux/arm64; do
+            arch="${platform#linux/}"
+            trivy image \
+              --platform "$platform" \
+              --scanners vuln \
+              --ignore-unfixed \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              --format json \
+              --output "trivy-app-${arch}.json" \
+              "$IMAGE_REF"
+            syft "$IMAGE_REF" --platform "$platform" -o spdx-json > "sbom-app-${arch}.spdx.json"
+          done
+
+      - name: Sign app image
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$IMAGE_REF"
+
+      - name: Attest app SBOMs and scan results
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          IMAGE_REPO: ${{ env.IMAGE }}
+        run: |
+          set -euo pipefail
+          for platform in linux/amd64 linux/arm64; do
+            arch="${platform#linux/}"
+            digest="$(crane manifest "$IMAGE_REF" | jq -r --arg arch "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest')"
+            test -n "$digest"
+            cosign attest --yes --predicate "sbom-app-${arch}.spdx.json" --type spdxjson "${IMAGE_REPO}@${digest}"
+            cosign attest --yes --predicate "trivy-app-${arch}.json" --type vuln "${IMAGE_REPO}@${digest}"
+          done
+
+      - name: Verify app signature and attestations
+        if: github.ref == 'refs/heads/main'
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          IMAGE_REPO: ${{ env.IMAGE }}
+        run: |
+          set -euo pipefail
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main"
+          cosign verify \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$IMAGE_REF"
+          for platform in linux/amd64 linux/arm64; do
+            arch="${platform#linux/}"
+            digest="$(crane manifest "$IMAGE_REF" | jq -r --arg arch "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest')"
+            for type in spdxjson vuln; do
+              cosign verify-attestation \
+                --type "$type" \
+                --certificate-identity "$identity" \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                "${IMAGE_REPO}@${digest}"
+            done
+          done
+
+      - name: Upload app SBOM and scan results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: app-sbom-and-scan
+          path: |
+            sbom-app-*.spdx.json
+            trivy-app-*.json
+          if-no-files-found: warn
+
+  build-proof:
+    name: build-proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: docker/setup-qemu-action@v4.4.0
+        with:
+          platforms: arm64
+
+      - uses: docker/setup-buildx-action@v4.4.1
+
+      - uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: sigstore/cosign-installer@v4.1.4
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - uses: actions/setup-go@v7.1.0
+        with:
+          go-version: "1.27.4"
+          cache: false
+
+      - name: Install Syft and Crane
+        run: |
+          go install github.com/anchore/syft/cmd/syft@${{ env.SYFT_VERSION }}
+          go install github.com/google/go-containerregistry/cmd/crane@${{ env.CRANE_VERSION }}
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Build and push proof image
+        id: build
+        uses: docker/build-push-action@v7.4.0
+        with:
+          context: deploy/proof
+          file: deploy/proof/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ env.PROOF_IMAGE }}:${{ github.sha }}
+          build-args: BUILD_SHA=${{ github.sha }}
+          cache-from: type=gha,scope=proof
+          cache-to: type=gha,mode=max,scope=proof
+
+      - name: Verify registry digest
+        env:
+          IMAGE_REF: ${{ env.PROOF_IMAGE }}:${{ github.sha }}
+          EXPECTED_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          actual="$(crane digest "$IMAGE_REF")"
+          test "$actual" = "$EXPECTED_DIGEST"
+
+      - name: Scan and generate proof SBOMs
+        env:
+          IMAGE_REF: ${{ env.PROOF_IMAGE }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          for platform in linux/amd64 linux/arm64; do
+            arch="${platform#linux/}"
+            trivy image \
+              --platform "$platform" \
+              --scanners vuln \
+              --ignore-unfixed \
+              --ignorefile deploy/proof/.trivyignore.yaml \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              --format json \
+              --output "trivy-proof-${arch}.json" \
+              "$IMAGE_REF"
+            syft "$IMAGE_REF" --platform "$platform" -o spdx-json > "sbom-proof-${arch}.spdx.json"
+          done
+
+      - name: Sign proof image
+        env:
+          IMAGE_REF: ${{ env.PROOF_IMAGE }}@${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "$IMAGE_REF"
+
+      - name: Attest proof SBOMs and scan results
+        env:
+          IMAGE_REF: ${{ env.PROOF_IMAGE }}@${{ steps.build.outputs.digest }}
+          IMAGE_REPO: ${{ env.PROOF_IMAGE }}
+        run: |
+          set -euo pipefail
+          for platform in linux/amd64 linux/arm64; do
+            arch="${platform#linux/}"
+            digest="$(crane manifest "$IMAGE_REF" | jq -r --arg arch "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest')"
+            test -n "$digest"
+            cosign attest --yes --predicate "sbom-proof-${arch}.spdx.json" --type spdxjson "${IMAGE_REPO}@${digest}"
+            cosign attest --yes --predicate "trivy-proof-${arch}.json" --type vuln "${IMAGE_REPO}@${digest}"
+          done
+
+      - name: Verify proof signature and attestations
+        if: github.ref == 'refs/heads/main'
+        env:
+          IMAGE_REF: ${{ env.PROOF_IMAGE }}@${{ steps.build.outputs.digest }}
+          IMAGE_REPO: ${{ env.PROOF_IMAGE }}
+        run: |
+          set -euo pipefail
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main"
+          cosign verify \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$IMAGE_REF"
+          for platform in linux/amd64 linux/arm64; do
+            arch="${platform#linux/}"
+            digest="$(crane manifest "$IMAGE_REF" | jq -r --arg arch "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest')"
+            for type in spdxjson vuln; do
+              cosign verify-attestation \
+                --type "$type" \
+                --certificate-identity "$identity" \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                "${IMAGE_REPO}@${digest}"
+            done
+          done
+
+      - name: Write proof image digest
+        run: echo "${{ steps.build.outputs.digest }}" > proof-image-digest.txt
+
+      - name: Upload proof image digest, SBOM and scan results
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: proof-image
+          path: |
+            proof-image-digest.txt
+            sbom-proof-*.spdx.json
+            trivy-proof-*.json
+          if-no-files-found: warn
+
+  promote-staging:
+    name: promote-staging
+    needs: [build-app, build-proof]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: main
+          path: main-repo
+
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: deploy
+          path: deploy-repo
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-go@v7.1.0
+        with:
+          go-version: "1.27.4"
+          cache: false
+
+      - name: Install yq
+        run: |
+          go install github.com/mikefarah/yq/v4@v4.53.3
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Update staging values
+        env:
+          SHA: ${{ github.sha }}
+          DIGEST: ${{ needs.build-app.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p deploy-repo/deploy/envs/staging
+          if [ ! -f deploy-repo/deploy/envs/staging/values.yaml ]; then
+            cp main-repo/deploy/envs/staging/values.yaml deploy-repo/deploy/envs/staging/values.yaml
+          fi
+          yq -i '.image.tag = strenv(SHA) | .image.digest = strenv(DIGEST) | .buildSha = strenv(SHA)' deploy-repo/deploy/envs/staging/values.yaml
+
+      - name: Commit and push staging digest
+        run: |
+          set -euo pipefail
+          cd deploy-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deploy/envs/staging/values.yaml
+          if git diff --cached --quiet; then
+            echo "staging values already up to date"
+            exit 0
+          fi
+          git commit -m "chore: promote ${GITHUB_SHA} to staging"
+          git push origin HEAD:deploy
+
+      - name: Release summary
+        run: |
+          {
+            echo "### Release digests"
+            echo ""
+            echo "- app: \`${{ needs.build-app.outputs.digest }}\`"
+            echo "- proof: \`${{ needs.build-proof.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
