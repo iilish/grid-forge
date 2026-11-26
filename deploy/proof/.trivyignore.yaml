@@ -1,0 +1,16 @@
+vulnerabilities:
+  - id: CVE-2026-78661
+    paths:
+      - usr/local/bin/kubectl
+    statement: kubectl v1.37.3 embeds golang.org/x/net v0.57.0; fixed in v0.62.0, awaiting an official kubectl rebuild.
+    expired_at: 2027-03-01
+  - id: CVE-2026-78669
+    paths:
+      - usr/local/bin/kubectl
+    statement: kubectl v1.37.3 embeds golang.org/x/net v0.57.0; fixed in v0.60.0, awaiting an official kubectl rebuild.
+    expired_at: 2027-03-01
+  - id: CVE-2026-56851
+    paths:
+      - usr/local/bin/kubectl
+    statement: kubectl v1.37.3 embeds golang.org/x/text v0.40.0; fixed in v0.41.0, awaiting an official kubectl rebuild.
+    expired_at: 2027-03-01

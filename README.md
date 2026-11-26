@@ -49,7 +49,7 @@ Full verification and cluster workflows:
 | **kubeconform** | 0.8+ | Kubernetes schema validation for the Helm chart and Postgres manifests. |
 | **kubectl** | 1.32+ | Inspecting local clusters and proof jobs. |
 | **k3d** | 5.9+ | Local Kubernetes without a separate VM. |
-| **cosign**, **trivy**, **syft** | 3.1+, 0.76+, 1.57+ | Release signing, scanning and SBOM checks. |
+| **cosign**, **trivy**, **syft**, **crane** | 3.1+, 0.76+, 1.57+, 0.22+ | Release signing, scanning, SBOM and digest checks. |
 | **Argo CD CLI** | 3.6+ | Debugging sync and application health. |
 
 You need macOS, Linux, or Windows with WSL2. Node and pnpm are **not** required; the UI is server-rendered Rust.
@@ -304,6 +304,14 @@ Renders `deploy/postgres` with Kustomize and validates the StatefulSet, Service 
 
 Renders `deploy/argocd/apps` with Kustomize and validates the Argo CD Application manifests. The Application CRD schema is skipped because it is not part of the Kubernetes core schemas. It does not install anything into a cluster.
 
+#### Release workflow
+
+`.github/workflows/release.yml` runs on a merge to `main`, or manually with `workflow_dispatch`.
+
+It builds the app and proof images for `linux/amd64` and `linux/arm64`, pushes them to GHCR by commit SHA, scans both platforms with Trivy, generates per-platform SBOMs, signs keyless with Cosign, and attests the SBOM and vulnerability results. The Trivy gate fails on fixable HIGH or CRITICAL findings; unfixed base-image findings are recorded but do not block. The proof image keeps a time-bound `deploy/proof/.trivyignore.yaml` exception for its stable kubectl binary. On `main` only, it writes the app tag and manifest digest to `deploy/envs/staging/values.yaml` on the `deploy` branch. It never rebuilds an image for promotion.
+
+After the first publish, make both GHCR packages public: `grid-forge` and `grid-forge-proof`. Before that, cluster pulls need an image pull secret.
+
 #### `just simulator`
 
 Creates `GRIDFORGE_SIMULATOR_DEVICES` synthetic devices, sends telemetry every `GRIDFORGE_SIMULATOR_INTERVAL_MS`, listens for commands and acknowledges them. Duration `0` runs until interrupted. Stop with Ctrl-C. It writes to the local database; use `just down --volumes` to reset local data.
@@ -354,6 +362,7 @@ deploy/helm/gridforge          one chart, per-service values
 deploy/postgres                Postgres StatefulSet, Service and Retain StorageClass
 deploy/argocd/apps             Argo CD Applications
 deploy/envs/{staging,prod}     environment values and image digests
+deploy/proof                   proof image with kubectl, cosign and crane
 infra/                         OpenTofu, from the AWS milestone
 ops/runbooks/                  one runbook per alert and drill
 bench/results/                 committed raw benchmark output

@@ -15,6 +15,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM debian:bookworm-slim
 
+ARG BUILD_SHA=dev
+
+LABEL org.opencontainers.image.source="https://github.com/iilish/grid-forge" \
+      org.opencontainers.image.title="gridforge" \
+      org.opencontainers.image.version="${BUILD_SHA}" \
+      org.opencontainers.image.revision="${BUILD_SHA}"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \

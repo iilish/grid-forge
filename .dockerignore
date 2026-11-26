@@ -4,6 +4,7 @@ target
 .agents
 AGENTS.md
 docs
+deploy
 prove/results
 .env
 .DS_Store
