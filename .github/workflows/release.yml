@@ -4,6 +4,16 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      verify_image:
+        description: "Existing multi-arch image reference to verify; skips build and promotion"
+        required: false
+        type: string
+      verify_identity_ref:
+        description: "Git ref used in the signing certificate identity"
+        required: false
+        default: refs/heads/main
+        type: string
 
 permissions:
   contents: read
@@ -25,6 +35,7 @@ env:
 jobs:
   build-app:
     name: build-app
+    if: github.event_name == 'push' || inputs.verify_image == ''
     runs-on: ubuntu-latest
     timeout-minutes: 60
     outputs:
@@ -125,26 +136,28 @@ jobs:
           done
 
       - name: Verify app signature and attestations
-        if: github.ref == 'refs/heads/main'
+        timeout-minutes: 5
         env:
           IMAGE_REF: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
           IMAGE_REPO: ${{ env.IMAGE }}
         run: |
           set -euo pipefail
-          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main"
-          cosign verify \
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}"
+          timeout 120s cosign verify \
             --certificate-identity "$identity" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "$IMAGE_REF"
+            "$IMAGE_REF" >/dev/null
+          echo "verified app image signature"
           for platform in linux/amd64 linux/arm64; do
             arch="${platform#linux/}"
             digest="$(crane manifest "$IMAGE_REF" | jq -r --arg arch "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest')"
             for type in spdxjson vuln; do
-              cosign verify-attestation \
+              timeout 120s cosign verify-attestation \
                 --type "$type" \
                 --certificate-identity "$identity" \
                 --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-                "${IMAGE_REPO}@${digest}"
+                "${IMAGE_REPO}@${digest}" >/dev/null
+              echo "verified ${type} attestation for ${arch}"
             done
           done
 
@@ -160,6 +173,7 @@ jobs:
 
   build-proof:
     name: build-proof
+    if: github.event_name == 'push' || inputs.verify_image == ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -261,26 +275,28 @@ jobs:
           done
 
       - name: Verify proof signature and attestations
-        if: github.ref == 'refs/heads/main'
+        timeout-minutes: 5
         env:
           IMAGE_REF: ${{ env.PROOF_IMAGE }}@${{ steps.build.outputs.digest }}
           IMAGE_REPO: ${{ env.PROOF_IMAGE }}
         run: |
           set -euo pipefail
-          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/heads/main"
-          cosign verify \
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${GITHUB_REF}"
+          timeout 120s cosign verify \
             --certificate-identity "$identity" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            "$IMAGE_REF"
+            "$IMAGE_REF" >/dev/null
+          echo "verified proof image signature"
           for platform in linux/amd64 linux/arm64; do
             arch="${platform#linux/}"
             digest="$(crane manifest "$IMAGE_REF" | jq -r --arg arch "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest')"
             for type in spdxjson vuln; do
-              cosign verify-attestation \
+              timeout 120s cosign verify-attestation \
                 --type "$type" \
                 --certificate-identity "$identity" \
                 --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-                "${IMAGE_REPO}@${digest}"
+                "${IMAGE_REPO}@${digest}" >/dev/null
+              echo "verified ${type} attestation for ${arch}"
             done
           done
 
@@ -298,10 +314,70 @@ jobs:
             trivy-proof-*.json
           if-no-files-found: warn
 
+  verify-existing:
+    name: verify-existing
+    if: inputs.verify_image != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - uses: sigstore/cosign-installer@v4.1.4
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - uses: actions/setup-go@v7.1.0
+        with:
+          go-version: "1.27.4"
+          cache: false
+
+      - name: Install Crane
+        run: |
+          go install github.com/google/go-containerregistry/cmd/crane@${{ env.CRANE_VERSION }}
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify existing image signature and attestations
+        timeout-minutes: 5
+        env:
+          IMAGE_REF: ${{ inputs.verify_image }}
+          IDENTITY_REF: ${{ inputs.verify_identity_ref }}
+        run: |
+          set -euo pipefail
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@${IDENTITY_REF}"
+          image_repo="${IMAGE_REF%@*}"
+          image_repo="${image_repo%:*}"
+          timeout 120s cosign verify \
+            --certificate-identity "$identity" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            "$IMAGE_REF" >/dev/null
+          echo "verified image signature"
+          for platform in linux/amd64 linux/arm64; do
+            arch="${platform#linux/}"
+            digest="$(crane manifest "$IMAGE_REF" | jq -r --arg arch "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest')"
+            test -n "$digest"
+            for type in spdxjson vuln; do
+              timeout 120s cosign verify-attestation \
+                --type "$type" \
+                --certificate-identity "$identity" \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                "${image_repo}@${digest}" >/dev/null
+              echo "verified ${type} attestation for ${arch}"
+            done
+          done
+
   promote-staging:
     name: promote-staging
     needs: [build-app, build-proof]
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.verify_image == ''
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
