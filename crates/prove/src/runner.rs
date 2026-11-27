@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 
@@ -40,12 +40,23 @@ pub struct RunOptions<'a> {
     pub repo_root: &'a Path,
 }
 
+#[derive(Debug)]
+pub struct RunReport {
+    pub code: i32,
+    pub pass: usize,
+    pub fail: usize,
+    pub pending: usize,
+    pub results_path: PathBuf,
+    pub failed_ids: Vec<String>,
+    pub pending_ids: Vec<String>,
+}
+
 pub fn run(
     ctx: &Ctx,
     registry: &[RegistryRow],
     checks: &[Check],
     options: &RunOptions<'_>,
-) -> Result<i32, String> {
+) -> Result<RunReport, String> {
     let max_phase = options.max_phase;
     let only = options.only;
     let allow_pending = options.allow_pending;
@@ -73,6 +84,8 @@ pub fn run(
     let mut fail = 0;
     let mut pending = 0;
     let mut matched = 0;
+    let mut failed_ids = Vec::new();
+    let mut pending_ids = Vec::new();
     let mut last_phase = None;
 
     for row in registry {
@@ -101,10 +114,12 @@ pub fn run(
             }
             Report::Pending(reason) => {
                 pending += 1;
+                pending_ids.push(row.id.clone());
                 ("PENDING", Some(reason))
             }
             Report::Fail(reason) => {
                 fail += 1;
+                failed_ids.push(row.id.clone());
                 ("FAIL", Some(reason))
             }
         };
@@ -148,14 +163,24 @@ pub fn run(
         display_path.display()
     );
 
-    if fail > 0 {
-        Ok(1)
+    let code = if fail > 0 {
+        1
     } else if pending > 0 && !allow_pending {
         eprintln!("PENDING checks are not allowed without --allow-pending");
-        Ok(2)
+        2
     } else {
-        Ok(0)
-    }
+        0
+    };
+
+    Ok(RunReport {
+        code,
+        pass,
+        fail,
+        pending,
+        results_path,
+        failed_ids,
+        pending_ids,
+    })
 }
 
 fn index_checks(checks: &[Check]) -> Result<HashMap<&str, &Check>, String> {

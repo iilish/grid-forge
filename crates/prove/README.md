@@ -139,6 +139,12 @@ PROVE_EXPECTED_BUILD_SHA=dev
   `P0-A3`. When unset, `P0-A3` reports `PENDING`.
 - `KUBE_NAMESPACE`, `PROD_NAMESPACE` — cluster namespaces for deploy gates.
 - `GH_REPO` — the repository used for CI and lead-time checks.
+- `CHECK_NAME` — commit status context. When set, the runner posts a pending
+  status before the checks and a success or failure status after them.
+- `HEAD_SHA`, `GH_TOKEN` — required with `CHECK_NAME`; the commit to attach the
+  status to and a fine-grained token with Commit statuses write.
+- `GITHUB_API_URL` — optional API base URL; defaults to
+  `https://api.github.com`.
 
 ## Results
 

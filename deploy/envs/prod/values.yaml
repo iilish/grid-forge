@@ -12,3 +12,13 @@ database:
   existingSecretKey: database-url
 
 logFilter: "info,gridforge=info"
+
+proof:
+  enabled: true
+  env: prod
+  checkName: prove/prod
+  only: "P0-A2,P0-S2,P0-S3,P0-S4"
+  image:
+    repository: ghcr.io/iilish/grid-forge-proof
+    tag: dev
+    digest: ""

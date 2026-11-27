@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gridforge-prod
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/part-of: gridforge
+    app.kubernetes.io/component: app
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/iilish/grid-forge.git
+      targetRevision: main
+      path: deploy/helm/gridforge
+      helm:
+        valueFiles:
+          - $values/deploy/envs/prod/values.yaml
+    - repoURL: https://github.com/iilish/grid-forge.git
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: prod
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true

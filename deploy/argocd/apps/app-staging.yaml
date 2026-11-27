@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gridforge-staging
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/part-of: gridforge
+    app.kubernetes.io/component: app
+spec:
+  project: default
+  sources:
+    - repoURL: https://github.com/iilish/grid-forge.git
+      targetRevision: main
+      path: deploy/helm/gridforge
+      helm:
+        valueFiles:
+          - $values/deploy/envs/staging/values.yaml
+    - repoURL: https://github.com/iilish/grid-forge.git
+      targetRevision: deploy
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: staging
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

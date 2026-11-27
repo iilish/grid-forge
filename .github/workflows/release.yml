@@ -217,7 +217,7 @@ jobs:
         id: build
         uses: docker/build-push-action@v7.4.0
         with:
-          context: deploy/proof
+          context: .
           file: deploy/proof/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
@@ -409,13 +409,14 @@ jobs:
         env:
           SHA: ${{ github.sha }}
           DIGEST: ${{ needs.build-app.outputs.digest }}
+          PROOF_DIGEST: ${{ needs.build-proof.outputs.digest }}
         run: |
           set -euo pipefail
           mkdir -p deploy-repo/deploy/envs/staging
           if [ ! -f deploy-repo/deploy/envs/staging/values.yaml ]; then
             cp main-repo/deploy/envs/staging/values.yaml deploy-repo/deploy/envs/staging/values.yaml
           fi
-          yq -i '.image.tag = strenv(SHA) | .image.digest = strenv(DIGEST) | .buildSha = strenv(SHA)' deploy-repo/deploy/envs/staging/values.yaml
+          yq -i '.image.tag = strenv(SHA) | .image.digest = strenv(DIGEST) | .buildSha = strenv(SHA) | .proof.image.tag = strenv(SHA) | .proof.image.digest = strenv(PROOF_DIGEST)' deploy-repo/deploy/envs/staging/values.yaml
 
       - name: Commit and push staging digest
         run: |

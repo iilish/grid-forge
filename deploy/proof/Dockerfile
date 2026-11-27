@@ -1,5 +1,17 @@
 # syntax=docker/dockerfile:1.7
 
+FROM rust:1.99-bookworm AS prove-builder
+
+ARG TARGETARCH
+
+WORKDIR /src
+COPY . .
+
+RUN --mount=type=cache,id=prove-cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
+    --mount=type=cache,id=prove-cargo-target-${TARGETARCH},target=/src/target \
+    cargo build --release -p gridforge-prove \
+    && cp target/release/gridforge-prove /usr/local/bin/gridforge-prove
+
 FROM --platform=$BUILDPLATFORM golang:1.27.4-bookworm AS tools
 
 ARG TARGETARCH
@@ -47,6 +59,10 @@ RUN set -eux; \
 
 COPY --from=tools /out/cosign /usr/local/bin/cosign
 COPY --from=tools /out/crane /usr/local/bin/crane
+
+COPY --from=prove-builder /usr/local/bin/gridforge-prove /usr/local/bin/gridforge-prove
+COPY prove /src/prove
+RUN mkdir -p /src/crates/prove /src/prove/results && chown -R 10001:10001 /src/prove
 
 ENV HOME=/tmp
 WORKDIR /tmp

@@ -36,6 +36,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 {{- end }}
 
+{{- define "gridforge.proofImage" -}}
+{{- if .Values.proof.image.digest }}
+{{- printf "%s@%s" .Values.proof.image.repository .Values.proof.image.digest }}
+{{- else }}
+{{- printf "%s:%s" .Values.proof.image.repository .Values.proof.image.tag }}
+{{- end }}
+{{- end }}
+
 {{- define "gridforge.databaseEnv" -}}
 - name: DATABASE_URL
   valueFrom:

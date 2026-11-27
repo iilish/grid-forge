@@ -24,6 +24,40 @@ logs *service:
 port-forward local_port="8080" target_port="8080":
     kubectl ${NAMESPACE:+-n "$NAMESPACE"} port-forward "svc/${RELEASE:-gridforge}" "{{local_port}}:{{target_port}}"
 
+# Create the local k3d cluster used for staging
+cluster-up:
+    k3d cluster create gridforge --servers 1 --agents 1 --wait
+
+# Delete the local k3d cluster
+cluster-down:
+    k3d cluster delete gridforge
+
+# Install Argo CD into the k3d cluster
+argocd-install:
+    kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+    kubectl apply --server-side --force-conflicts -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v3.6.3/manifests/install.yaml
+    kubectl -n argocd rollout status deployment/argocd-server --timeout=300s
+
+# Create namespaces, the Postgres StorageClass and the root app-of-apps.
+# Create the gridforge-db and gridforge-proof-token Secrets first.
+argocd-bootstrap:
+    kubectl create namespace staging --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create namespace prod --dry-run=client -o yaml | kubectl apply -f -
+    kubectl apply -f deploy/postgres/storageclass.yaml
+    kubectl apply -f deploy/argocd/root.yaml
+
+# Forward the Argo CD UI/API
+argocd-port-forward local_port="8080":
+    kubectl -n argocd port-forward svc/argocd-server "{{local_port}}:443"
+
+# Sync an Argo CD application through the local port-forward
+argocd-sync app:
+    argocd app sync {{app}} --grpc-web --port-forward --port-forward-namespace argocd
+
+# Re-run the staging PostSync proof Job via Argo CD
+proof-rerun:
+    argocd app sync gridforge-staging --grpc-web --port-forward --port-forward-namespace argocd
+
 # Fast local gate: static checks plus unit and contract tests; no Docker
 check: lint test
 

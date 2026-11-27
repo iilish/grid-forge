@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use gridforge_prove::checks;
 use gridforge_prove::cli::{self, Mode};
+use gridforge_prove::commit_status::{self, CommitStatusClient};
 use gridforge_prove::model::Ctx;
 use gridforge_prove::registry::{self, LintSummary};
 use gridforge_prove::runner;
@@ -81,8 +82,9 @@ fn execute(mode: Mode) -> Result<i32, String> {
             }
 
             let ctx = Ctx::load(&repo_root, &env)?;
+            let mut commit_status_client = CommitStatusClient::from_ctx(&ctx)?;
             let results_dir = repo_root.join("prove").join("results");
-            runner::run(
+            let result = runner::run(
                 &ctx,
                 &registry,
                 &checks,
@@ -93,7 +95,27 @@ fn execute(mode: Mode) -> Result<i32, String> {
                     results_dir: &results_dir,
                     repo_root: &repo_root,
                 },
-            )
+            );
+
+            match result {
+                Ok(report) => {
+                    let code = report.code;
+                    if let Some(client) = commit_status_client.take() {
+                        client.complete(code, &commit_status::description(&report))?;
+                    }
+                    Ok(code)
+                }
+                Err(error) => {
+                    if let Some(client) = commit_status_client.take() {
+                        client
+                            .complete(1, &format!("proof run failed: {error}"))
+                            .map_err(|completion| {
+                                format!("{error}; failed to complete commit status: {completion}")
+                            })?;
+                    }
+                    Err(error)
+                }
+            }
         }
     }
 }
