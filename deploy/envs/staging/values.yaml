@@ -1,10 +1,14 @@
 image:
   repository: ghcr.io/iilish/grid-forge
-  tag: b09f5ab915e448a8d441df938fbaebb14c5469a5
-  digest: "sha256:fac8defa6a1f9ab60672d3b19f7a1b57f7053b3f29ab398954021d77f666e076"
-buildSha: b09f5ab915e448a8d441df938fbaebb14c5469a5
+  tag: d6c5c0c538593447af392ffce49dd2f6bed3d1aa
+  digest: "sha256:403bf954a8aba69ed6e3ed90e5faf700da46c692ca27d6d55416633440db7437"
+buildSha: d6c5c0c538593447af392ffce49dd2f6bed3d1aa
 orgId: "00000000-0000-0000-0000-000000000001"
 database:
   existingSecret: gridforge-db
   existingSecretKey: database-url
 logFilter: "info,gridforge=debug"
+proof:
+  image:
+    tag: d6c5c0c538593447af392ffce49dd2f6bed3d1aa
+    digest: sha256:9f8ac0a80725fd1f40c95fcfff6cbfceed56a4b7be6526b49d6f3551876b677c
