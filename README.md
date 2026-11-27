@@ -308,6 +308,18 @@ Renders `deploy/argocd/apps` with Kustomize and validates the Argo CD Applicatio
 
 `.github/workflows/release.yml` runs on a merge to `main`, or manually with `workflow_dispatch`.
 
+To test workflow changes before merging, push the branch and run `gh workflow run release.yml --ref <branch>`. Build, scan, sign, attest, and verify run against that ref; `promote-staging` only runs on `main`.
+
+To verify an existing image without rebuilding, dispatch with `verify_image` and optionally `verify_identity_ref` (default `refs/heads/main`):
+
+```bash
+gh workflow run release.yml --ref main \
+  -f verify_image=ghcr.io/iilish/grid-forge@sha256:<digest> \
+  -f verify_identity_ref=refs/heads/main
+```
+
+The `verify-existing` job checks the index signature and the per-platform SBOM and vulnerability attestations, then exits. It skips build and promotion.
+
 It builds the app and proof images for `linux/amd64` and `linux/arm64`, pushes them to GHCR by commit SHA, scans both platforms with Trivy, generates per-platform SBOMs, signs keyless with Cosign, and attests the SBOM and vulnerability results. The Trivy gate fails on fixable HIGH or CRITICAL findings; unfixed base-image findings are recorded but do not block. The proof image keeps a time-bound `deploy/proof/.trivyignore.yaml` exception for its stable kubectl binary. On `main` only, it writes the app tag and manifest digest to `deploy/envs/staging/values.yaml` on the `deploy` branch. It never rebuilds an image for promotion.
 
 After the first publish, make both GHCR packages public: `grid-forge` and `grid-forge-proof`. Before that, cluster pulls need an image pull secret.

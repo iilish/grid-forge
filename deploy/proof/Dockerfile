@@ -31,6 +31,7 @@ LABEL org.opencontainers.image.source="https://github.com/iilish/grid-forge" \
       org.opencontainers.image.revision="${BUILD_SHA}"
 
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends bash ca-certificates curl jq \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 gridforge \
