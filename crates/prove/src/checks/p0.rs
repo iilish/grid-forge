@@ -45,6 +45,28 @@ fn p0_page_build_sha_matches_running_digest(ctx: &Ctx) -> Result<CheckOutcome, C
             "PROVE_EXPECTED_BUILD_SHA is not set; cannot verify the page build SHA".to_string(),
         ));
     };
+    if kube_namespace(ctx).is_some() {
+        let deployment = deployment_name(ctx);
+        let annotation = deployment_annotation(ctx, deployment, "gridforge.io/build-sha")?;
+        if annotation != sha {
+            return Err(CheckError::new(format!(
+                "page build SHA '{sha}' does not match deployment annotation '{annotation}'"
+            )));
+        }
+        if annotation != expected {
+            return Err(CheckError::new(format!(
+                "deployment annotation '{annotation}' does not match PROVE_EXPECTED_BUILD_SHA '{expected}'"
+            )));
+        }
+        let image = deployment_image(ctx, deployment)?;
+        let digest = deployment_annotation(ctx, deployment, "gridforge.io/image-digest")?;
+        if digest.is_empty() || !image.ends_with(&format!("@{digest}")) {
+            return Err(CheckError::new(format!(
+                "deployment image '{image}' is not pinned to annotated digest '{digest}'"
+            )));
+        }
+        return Ok(CheckOutcome::Pass);
+    }
     if sha != expected {
         return Err(CheckError::new(format!(
             "page build SHA '{sha}' does not match PROVE_EXPECTED_BUILD_SHA '{expected}'"
@@ -54,6 +76,36 @@ fn p0_page_build_sha_matches_running_digest(ctx: &Ctx) -> Result<CheckOutcome, C
 }
 
 fn p0_readyz_tracks_database_availability(ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
+    if let Some(namespace) = kube_namespace(ctx) {
+        let statefulset = ctx
+            .get("PROVE_POSTGRES_STATEFULSET")
+            .filter(|name| !name.is_empty())
+            .unwrap_or("postgres");
+        let mut guard = StatefulSetScaleGuard::new(namespace, statefulset);
+        scale_statefulset(namespace, statefulset, 0)?;
+
+        let detection = wait_for_readyz(ctx, false, Duration::from_secs(30));
+        if !detection.ok {
+            return Err(CheckError::new(format!(
+                "/readyz never returned non-200 within 30 s while Postgres was scaled down ({})",
+                detection.last
+            )));
+        }
+
+        scale_statefulset(namespace, statefulset, 1)?;
+        guard.disarm();
+
+        let recovery = wait_for_readyz(ctx, true, Duration::from_secs(60));
+        if !recovery.ok {
+            return Err(CheckError::new(format!(
+                "/readyz never returned 200 within 60 s after Postgres was restored ({})",
+                recovery.last
+            )));
+        }
+
+        return Ok(CheckOutcome::Pass);
+    }
+
     let Some(container) = ctx
         .get("PROVE_DB_CONTAINER")
         .filter(|name| !name.is_empty())
@@ -111,11 +163,40 @@ fn p0_channel_full_drops_are_counted(ctx: &Ctx) -> Result<CheckOutcome, CheckErr
     run_self_test(ctx, "channel-full")
 }
 
-fn p0_page_build_sha_is_current(_ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
-    Ok(CheckOutcome::Pending(
-        "requires deployed metadata: deployment annotation, committed tag, running digest, registry revision"
-            .to_string(),
-    ))
+fn p0_page_build_sha_is_current(ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
+    let Some(_namespace) = kube_namespace(ctx) else {
+        return Ok(CheckOutcome::Pending(
+            "requires deployed metadata: deployment annotation, running digest, registry revision"
+                .to_string(),
+        ));
+    };
+
+    let deployment = deployment_name(ctx);
+    let page = page_build_sha(ctx)?;
+    let annotation = deployment_annotation(ctx, deployment, "gridforge.io/build-sha")?;
+    if page != annotation {
+        return Err(CheckError::new(format!(
+            "page build SHA '{page}' does not match deployment annotation '{annotation}'"
+        )));
+    }
+
+    if let Some(expected) = expected_build_sha(ctx)
+        && annotation != expected
+    {
+        return Err(CheckError::new(format!(
+            "deployment annotation '{annotation}' does not match PROVE_EXPECTED_BUILD_SHA '{expected}'"
+        )));
+    }
+
+    let image = deployment_image(ctx, deployment)?;
+    let digest = deployment_annotation(ctx, deployment, "gridforge.io/image-digest")?;
+    if digest.is_empty() || !image.ends_with(&format!("@{digest}")) {
+        return Err(CheckError::new(format!(
+            "deployment image '{image}' is not pinned to annotated digest '{digest}'"
+        )));
+    }
+
+    Ok(CheckOutcome::Pass)
 }
 
 fn p0_deployed_app_passes_smoke_test(ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
@@ -141,11 +222,108 @@ fn p0_deployed_app_passes_smoke_test(ctx: &Ctx) -> Result<CheckOutcome, CheckErr
     Ok(CheckOutcome::Pass)
 }
 
-fn p0_running_image_is_signed_and_scanned(_ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
-    Ok(CheckOutcome::Pending(
-        "needs a cluster plus cosign/crane to verify the signature and vulnerability attestation of the running digest"
-            .to_string(),
-    ))
+fn p0_running_image_is_signed_and_scanned(ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
+    if kube_namespace(ctx).is_none() {
+        return Ok(CheckOutcome::Pending(
+            "needs a cluster plus cosign/crane to verify the signature and vulnerability attestation of the running digest"
+                .to_string(),
+        ));
+    }
+
+    let deployment = deployment_name(ctx);
+    let image = deployment_image(ctx, deployment)?;
+    let digest = deployment_annotation(ctx, deployment, "gridforge.io/image-digest")?;
+    if digest.is_empty() {
+        return Err(CheckError::new(
+            "deployment is missing the gridforge.io/image-digest annotation",
+        ));
+    }
+
+    let image_ref = if image.contains('@') {
+        image.clone()
+    } else {
+        let repository = image
+            .rsplit_once(':')
+            .map(|(repo, _)| repo)
+            .unwrap_or(&image);
+        format!("{repository}@{digest}")
+    };
+    let repository = image_ref
+        .split_once('@')
+        .map(|(repo, _)| repo.to_string())
+        .ok_or_else(|| CheckError::new(format!("image reference '{image_ref}' has no digest")))?;
+    let github_repo = ctx
+        .get("GH_REPO")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| CheckError::new("GH_REPO is required to verify the signing identity"))?;
+    let identity =
+        format!("https://github.com/{github_repo}/.github/workflows/release.yml@refs/heads/main");
+    let issuer = "https://token.actions.githubusercontent.com";
+
+    run_quiet(
+        "cosign",
+        &[
+            "verify",
+            "--certificate-identity",
+            &identity,
+            "--certificate-oidc-issuer",
+            issuer,
+            &image_ref,
+        ],
+    )?;
+
+    let manifest = Command::new("crane")
+        .args(["manifest", &image_ref])
+        .output()
+        .map_err(|error| CheckError::new(format!("failed to run `crane manifest`: {error}")))?;
+    if !manifest.status.success() {
+        return Err(CheckError::new(format!(
+            "`crane manifest {image_ref}` failed: {}",
+            String::from_utf8_lossy(&manifest.stderr).trim()
+        )));
+    }
+    let manifest: Value = serde_json::from_slice(&manifest.stdout)
+        .map_err(|error| CheckError::new(format!("crane manifest output is not JSON: {error}")))?;
+    let manifests = manifest
+        .get("manifests")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CheckError::new("crane manifest output has no manifests array"))?;
+    let mut platforms = 0;
+    for entry in manifests {
+        let os = entry
+            .get("platform")
+            .and_then(|platform| platform.get("os"))
+            .and_then(Value::as_str);
+        if os != Some("linux") {
+            continue;
+        }
+        let Some(child_digest) = entry.get("digest").and_then(Value::as_str) else {
+            continue;
+        };
+        platforms += 1;
+        for attestation_type in ["spdxjson", "vuln"] {
+            run_quiet(
+                "cosign",
+                &[
+                    "verify-attestation",
+                    "--type",
+                    attestation_type,
+                    "--certificate-identity",
+                    &identity,
+                    "--certificate-oidc-issuer",
+                    issuer,
+                    &format!("{repository}@{child_digest}"),
+                ],
+            )?;
+        }
+    }
+    if platforms == 0 {
+        return Err(CheckError::new(
+            "crane manifest output has no linux platform manifests",
+        ));
+    }
+
+    Ok(CheckOutcome::Pass)
 }
 
 fn p0_worker_retry_exhaustion_is_counted(ctx: &Ctx) -> Result<CheckOutcome, CheckError> {
@@ -157,6 +335,43 @@ fn p0_readyz_is_not_ready_while_draining(ctx: &Ctx) -> Result<CheckOutcome, Chec
 }
 
 fn run_self_test(ctx: &Ctx, self_test: &str) -> Result<CheckOutcome, CheckError> {
+    if let Some(namespace) = kube_namespace(ctx) {
+        let pod = app_pod(namespace)?;
+        let output = Command::new("kubectl")
+            .args([
+                "exec",
+                "-n",
+                namespace,
+                &pod,
+                "--",
+                "gridforge",
+                "self-test",
+                self_test,
+            ])
+            .output()
+            .map_err(|error| {
+                CheckError::new(format!(
+                    "failed to run `kubectl exec ... gridforge self-test {self_test}`: {error}"
+                ))
+            })?;
+        if !output.status.success() {
+            let mut reason = format!(
+                "`gridforge self-test {self_test}` in pod {pod} exited with {}",
+                output.status
+            );
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if !stdout.trim().is_empty() {
+                reason.push_str(&format!("\nstdout:\n{}", stdout.trim()));
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.trim().is_empty() {
+                reason.push_str(&format!("\nstderr:\n{}", stderr.trim()));
+            }
+            return Err(CheckError::new(reason));
+        }
+        return Ok(CheckOutcome::Pass);
+    }
+
     let root = repo_root();
     let (program, arguments) = match ctx.get("GRIDFORGE_BIN").filter(|value| !value.is_empty()) {
         Some(binary) => (
@@ -226,6 +441,134 @@ fn p0_rollback_to_previous_digest_is_recorded(_ctx: &Ctx) -> Result<CheckOutcome
 fn expected_build_sha(ctx: &Ctx) -> Option<&str> {
     ctx.get("PROVE_EXPECTED_BUILD_SHA")
         .filter(|value| !value.trim().is_empty())
+}
+
+fn kube_namespace(ctx: &Ctx) -> Option<&str> {
+    ctx.get("KUBE_NAMESPACE")
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn deployment_name(ctx: &Ctx) -> &str {
+    ctx.get("PROVE_DEPLOYMENT")
+        .filter(|value| !value.is_empty())
+        .unwrap_or("gridforge")
+}
+
+fn deployment_annotation(ctx: &Ctx, deployment: &str, key: &str) -> Result<String, CheckError> {
+    let namespace = kube_namespace(ctx)
+        .ok_or_else(|| CheckError::new("KUBE_NAMESPACE is required for cluster checks"))?;
+    let path = format!(
+        "jsonpath={{.metadata.annotations.{}}}",
+        key.replace('.', "\\.")
+    );
+    kubectl(&[
+        "get",
+        "deployment",
+        deployment,
+        "-n",
+        namespace,
+        "-o",
+        &path,
+    ])
+}
+
+fn deployment_image(ctx: &Ctx, deployment: &str) -> Result<String, CheckError> {
+    let namespace = kube_namespace(ctx)
+        .ok_or_else(|| CheckError::new("KUBE_NAMESPACE is required for cluster checks"))?;
+    kubectl(&[
+        "get",
+        "deployment",
+        deployment,
+        "-n",
+        namespace,
+        "-o",
+        "jsonpath={.spec.template.spec.containers[0].image}",
+    ])
+}
+
+fn app_pod(namespace: &str) -> Result<String, CheckError> {
+    let pod = kubectl(&[
+        "get",
+        "pods",
+        "-n",
+        namespace,
+        "-l",
+        "app.kubernetes.io/name=gridforge,app.kubernetes.io/component=app",
+        "-o",
+        "jsonpath={.items[0].metadata.name}",
+    ])?;
+    if pod.is_empty() {
+        return Err(CheckError::new(format!(
+            "no running app pod found in namespace '{namespace}'"
+        )));
+    }
+    Ok(pod)
+}
+
+fn kubectl(args: &[&str]) -> Result<String, CheckError> {
+    let output = Command::new("kubectl")
+        .args(args)
+        .output()
+        .map_err(|error| CheckError::new(format!("failed to run `kubectl`: {error}")))?;
+    if !output.status.success() {
+        return Err(CheckError::new(format!(
+            "`kubectl {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn scale_statefulset(namespace: &str, name: &str, replicas: u32) -> Result<(), CheckError> {
+    let replicas = format!("--replicas={replicas}");
+    kubectl(&["scale", "statefulset", name, "-n", namespace, &replicas])?;
+    Ok(())
+}
+
+fn run_quiet(program: &str, args: &[&str]) -> Result<(), CheckError> {
+    let output = Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|error| CheckError::new(format!("failed to run `{program}`: {error}")))?;
+    if !output.status.success() {
+        return Err(CheckError::new(format!(
+            "`{program} {}` failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
+}
+
+struct StatefulSetScaleGuard {
+    namespace: String,
+    name: String,
+    armed: bool,
+}
+
+impl StatefulSetScaleGuard {
+    fn new(namespace: &str, name: &str) -> Self {
+        Self {
+            namespace: namespace.to_string(),
+            name: name.to_string(),
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for StatefulSetScaleGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = scale_statefulset(&self.namespace, &self.name, 1);
+        }
+    }
 }
 
 fn page_build_sha(ctx: &Ctx) -> Result<String, CheckError> {

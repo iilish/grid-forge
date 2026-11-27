@@ -12,3 +12,13 @@ database:
   existingSecretKey: database-url
 
 logFilter: "info,gridforge=debug"
+
+proof:
+  enabled: true
+  env: staging
+  checkName: prove/staging
+  only: "P0-A1,P0-A2,P0-A3,P0-S1,P0-S2,P0-S3,P0-S4,P0-S5,P0-S6"
+  image:
+    repository: ghcr.io/iilish/grid-forge-proof
+    tag: dev
+    digest: ""

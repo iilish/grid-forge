@@ -1,0 +1,84 @@
+{{- if .Values.proof.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "gridforge.fullname" . }}-proof
+  labels:
+    {{- include "gridforge.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  backoffLimit: {{ .Values.proof.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.proof.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        {{- include "gridforge.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "gridforge.fullname" . }}-proof
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: proof
+          image: {{ include "gridforge.proofImage" . }}
+          imagePullPolicy: {{ .Values.proof.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - exec gridforge-prove 0 "$GP_ENV" --only "$PROOF_ONLY"
+          env:
+            - name: GP_ENV
+              value: {{ .Values.proof.env | quote }}
+            - name: BASE_URL
+              value: {{ printf "http://%s:%v" (include "gridforge.fullname" .) .Values.service.port | quote }}
+            - name: KUBE_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: PROD_NAMESPACE
+              value: {{ .Values.proof.prodNamespace | quote }}
+            - name: PROVE_DEPLOYMENT
+              value: {{ include "gridforge.fullname" . | quote }}
+            - name: GH_REPO
+              value: {{ .Values.proof.githubRepo | quote }}
+            - name: GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.proof.tokenSecret }}
+                  key: {{ .Values.proof.tokenSecretKey }}
+            - name: CHECK_NAME
+              value: {{ .Values.proof.checkName | quote }}
+            - name: HEAD_SHA
+              value: {{ .Values.buildSha | quote }}
+            - name: PROVE_EXPECTED_BUILD_SHA
+              value: {{ .Values.buildSha | quote }}
+            - name: PROOF_ONLY
+              value: {{ .Values.proof.only | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.logFilter | quote }}
+          resources:
+            {{- toYaml .Values.proof.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: results
+              mountPath: /src/prove/results
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: results
+          emptyDir: {}
+{{- end }}

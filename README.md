@@ -241,6 +241,30 @@ Follows logs from the local stack. `just logs` follows everything; `just logs po
 
 Forwards a local port to the GridForge Kubernetes service. `just port-forward` maps `8080:8080`; `just port-forward 8090` maps local `8090` to the service's `8080`. It uses the current kubectl namespace unless `NAMESPACE` is set, and the service name defaults to `gridforge`; override with `RELEASE`. Requires a running cluster and deployment.
 
+#### `just cluster-up`
+
+Creates the local k3d cluster used for staging. Requires Docker and k3d. k3d merges kubeconfig and sets the current context to `k3d-gridforge`. The cluster survives Docker restarts while its containers exist; `just cluster-down` deletes it and its volumes.
+
+#### `just argocd-install`
+
+Installs Argo CD `v3.6.3` into the `argocd` namespace and waits for the server rollout. Run after `just cluster-up`.
+
+#### `just argocd-bootstrap`
+
+Creates the `staging` and `prod` namespaces, applies the cluster-scoped Postgres StorageClass once, and applies `deploy/argocd/root.yaml`. Create the namespaces first, then the `gridforge-db` and `gridforge-proof-token` Secrets in both namespaces, before running it; the recipe repeats namespace creation safely. See [`ops/runbooks/staging-lifecycle.md`](ops/runbooks/staging-lifecycle.md).
+
+#### `just argocd-port-forward`
+
+Forwards the Argo CD UI/API. `just argocd-port-forward` maps local `8080` to Argo CD; `just argocd-port-forward 8090` maps local `8090`. Open `https://localhost:<port>`.
+
+#### `just argocd-sync`
+
+Syncs one Argo CD Application through the local port-forward. Use it for prod promotion changes or to force a staging sync.
+
+#### `just proof-rerun`
+
+Syncs `gridforge-staging`, which re-runs the PostSync proof Job and posts the `prove/staging` GitHub commit status.
+
 #### `just build`
 
 Builds every workspace member with `cargo build --workspace`. Runs build scripts, including Protobuf code generation for `gridforge-contracts`. Success: exit code 0 and `target/debug/` contains the generated code and binaries. It does not run tests.
@@ -320,7 +344,9 @@ gh workflow run release.yml --ref main \
 
 The `verify-existing` job checks the index signature and the per-platform SBOM and vulnerability attestations, then exits. It skips build and promotion.
 
-It builds the app and proof images for `linux/amd64` and `linux/arm64`, pushes them to GHCR by commit SHA, scans both platforms with Trivy, generates per-platform SBOMs, signs keyless with Cosign, and attests the SBOM and vulnerability results. The Trivy gate fails on fixable HIGH or CRITICAL findings; unfixed base-image findings are recorded but do not block. The proof image keeps a time-bound `deploy/proof/.trivyignore.yaml` exception for its stable kubectl binary. On `main` only, it writes the app tag and manifest digest to `deploy/envs/staging/values.yaml` on the `deploy` branch. It never rebuilds an image for promotion.
+It builds the app and proof images for `linux/amd64` and `linux/arm64`, pushes them to GHCR by commit SHA, scans both platforms with Trivy, generates per-platform SBOMs, signs keyless with Cosign, and attests the SBOM and vulnerability results. The Trivy gate fails on fixable HIGH or CRITICAL findings; unfixed base-image findings are recorded but do not block. The proof image keeps a time-bound `deploy/proof/.trivyignore.yaml` exception for its stable kubectl binary. On `main` only, it writes the app and proof tags and manifest digests to `deploy/envs/staging/values.yaml` on the `deploy` branch. It never rebuilds an image for promotion.
+
+The proof image contains `gridforge-prove`, `prove/registry.tsv` and the environment files. The staging app release runs it as a PostSync Job and posts the `prove/staging` commit status.
 
 After the first publish, make both GHCR packages public: `grid-forge` and `grid-forge-proof`. Before that, cluster pulls need an image pull secret.
 

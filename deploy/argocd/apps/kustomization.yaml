@@ -3,3 +3,5 @@ kind: Kustomization
 resources:
   - postgres-staging.yaml
   - postgres-prod.yaml
+  - app-staging.yaml
+  - app-prod.yaml

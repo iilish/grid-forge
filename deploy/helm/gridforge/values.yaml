@@ -30,6 +30,24 @@ migration:
   backoffLimit: 0
   activeDeadlineSeconds: 600
 
+proof:
+  enabled: false
+  image:
+    repository: ghcr.io/iilish/grid-forge-proof
+    tag: dev
+    digest: ""
+    pullPolicy: IfNotPresent
+  env: staging
+  checkName: prove/staging
+  only: "P0-A1,P0-A2,P0-A3,P0-S1,P0-S2,P0-S3,P0-S4,P0-S5,P0-S6"
+  githubRepo: iilish/grid-forge
+  prodNamespace: prod
+  tokenSecret: gridforge-proof-token
+  tokenSecretKey: token
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  resources: {}
+
 podAnnotations: {}
 podLabels: {}
 nodeSelector: {}
