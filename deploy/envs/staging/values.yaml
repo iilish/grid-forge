@@ -1,0 +1,10 @@
+image:
+  repository: ghcr.io/iilish/grid-forge
+  tag: b09f5ab915e448a8d441df938fbaebb14c5469a5
+  digest: "sha256:fac8defa6a1f9ab60672d3b19f7a1b57f7053b3f29ab398954021d77f666e076"
+buildSha: b09f5ab915e448a8d441df938fbaebb14c5469a5
+orgId: "00000000-0000-0000-0000-000000000001"
+database:
+  existingSecret: gridforge-db
+  existingSecretKey: database-url
+logFilter: "info,gridforge=debug"
