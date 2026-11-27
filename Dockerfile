@@ -2,14 +2,15 @@
 
 FROM rust:1.99-bookworm AS builder
 
+ARG TARGETARCH
 ARG BUILD_SHA=dev
 ENV GRIDFORGE_BUILD_SHA=${BUILD_SHA}
 
 WORKDIR /src
 COPY . .
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/src/target \
+RUN --mount=type=cache,id=cargo-registry-${TARGETARCH},target=/usr/local/cargo/registry \
+    --mount=type=cache,id=cargo-target-${TARGETARCH},target=/src/target \
     cargo build --release -p grid-forge --bin gridforge \
     && cp target/release/gridforge /usr/local/bin/gridforge
 
